@@ -137,4 +137,85 @@ void JitterBuffer_SetDecoder(JitterBuffer* jb, void* decoder, OpusDecodeFunc dec
 typedef int (*PlcFunc)(void* decoder, int16_t* pcm, int frame_size);
 void JitterBuffer_SetPlc(JitterBuffer* jb, PlcFunc plc_func);
 
+//=============================================================================
+// 多流 Jitter Buffer (per-SSRC)
+//=============================================================================
+
+/**
+ * @brief 单个流的信息
+ */
+typedef struct {
+    uint32_t        ssrc;           // 流标识
+    JitterBuffer*   jitter_buffer;  // 对应的 JitterBuffer
+    void*           decoder;        // 独立的 Opus 解码器
+    uint64_t        last_active;    // 最后活跃时间
+    bool            active;         // 是否活跃
+} StreamInfo;
+
+/**
+ * @brief 多流 Jitter Buffer 管理器
+ */
+typedef struct MultiStreamJitterBuffer MultiStreamJitterBuffer;
+
+/**
+ * @brief 创建多流 JitterBuffer 管理器
+ * @param max_streams 最大流数量（建议设为 MAX_CLIENTS）
+ * @param config 每个流的 JitterBuffer 配置
+ * @return 管理器实例
+ */
+MultiStreamJitterBuffer* MultiStreamJB_Create(int max_streams, const JitterConfig* config);
+
+/**
+ * @brief 销毁多流 JitterBuffer 管理器
+ */
+void MultiStreamJB_Destroy(MultiStreamJitterBuffer* msjb);
+
+/**
+ * @brief 重置所有流
+ */
+void MultiStreamJB_Reset(MultiStreamJitterBuffer* msjb);
+
+/**
+ * @brief 放入 RTP 包（自动按 SSRC 分流）
+ * @return 0 成功, <0 失败
+ */
+int MultiStreamJB_Put(MultiStreamJitterBuffer* msjb, const RtpHeader* rtp,
+                      const uint8_t* payload, uint16_t payload_len);
+
+/**
+ * @brief 获取混音后的音频帧
+ * @param msjb 管理器实例
+ * @param samples 输出 PCM 缓冲区
+ * @param max_samples 缓冲区最大采样数
+ * @return 实际采样数, 0 表示无数据
+ */
+int MultiStreamJB_GetMixed(MultiStreamJitterBuffer* msjb, int16_t* samples, int max_samples);
+
+/**
+ * @brief 获取当前活跃流数量
+ */
+int MultiStreamJB_GetActiveStreams(MultiStreamJitterBuffer* msjb);
+
+/**
+ * @brief 获取总体统计（所有流汇总）
+ */
+void MultiStreamJB_GetStats(MultiStreamJitterBuffer* msjb, JitterStats* stats);
+
+/**
+ * @brief 设置解码器创建/销毁回调
+ */
+typedef void* (*DecoderCreateFunc)(void);
+typedef void (*DecoderDestroyFunc)(void* decoder);
+void MultiStreamJB_SetDecoderFactory(MultiStreamJitterBuffer* msjb,
+                                      DecoderCreateFunc create_func,
+                                      DecoderDestroyFunc destroy_func,
+                                      OpusDecodeFunc decode_func,
+                                      PlcFunc plc_func);
+
+/**
+ * @brief 清理超时不活跃的流
+ * @param timeout_ms 超时时间（毫秒）
+ */
+void MultiStreamJB_CleanupInactive(MultiStreamJitterBuffer* msjb, uint32_t timeout_ms);
+
 #endif // JITTER_BUFFER_H

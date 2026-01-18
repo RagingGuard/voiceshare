@@ -249,3 +249,34 @@ int OpusCodec_JitterPlc(void* decoder, int16_t* pcm, int frame_size) {
     
     return ret;
 }
+
+//=============================================================================
+// 独立解码器创建/销毁 (用于 MultiStreamJitterBuffer)
+//=============================================================================
+
+void* OpusCodec_CreateDecoder(void) {
+    if (!opus_is_loaded()) {
+        if (!opus_dynamic_init()) {
+            LOG_ERROR("Failed to initialize Opus for decoder creation");
+            return NULL;
+        }
+    }
+    
+    int error;
+    OpusDecoder* decoder = p_opus_decoder_create(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS, &error);
+    
+    if (error != OPUS_OK || !decoder) {
+        LOG_ERROR("Failed to create independent Opus decoder: %s", p_opus_strerror(error));
+        return NULL;
+    }
+    
+    LOG_DEBUG("Independent Opus decoder created");
+    return decoder;
+}
+
+void OpusCodec_DestroyDecoder(void* decoder) {
+    if (!decoder) return;
+    
+    p_opus_decoder_destroy((OpusDecoder*)decoder);
+    LOG_DEBUG("Independent Opus decoder destroyed");
+}

@@ -110,4 +110,18 @@ int Audio_EnumPlaybackDevices(char names[][64], int max_count);
  */
 void Audio_Mix(int16_t* output, const int16_t** inputs, int input_count, int sample_count);
 
+//=============================================================================
+// 音频 DSP 处理 (客户端)
+//=============================================================================
+
+/**
+ * @brief 启用/禁用采集端 DSP 处理 (噪声门限)
+ */
+void Audio_EnableCaptureDsp(bool enable);
+
+/**
+ * @brief 检查采集端 DSP 是否启用
+ */
+bool Audio_IsCaptureDspEnabled(void);
+
 #endif // AUDIO_H

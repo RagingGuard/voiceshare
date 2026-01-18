@@ -404,3 +404,321 @@ void JitterBuffer_SetPlc(JitterBuffer* jb, PlcFunc plc_func) {
     jb->plc_func = plc_func;
     MutexUnlock(&jb->mutex);
 }
+
+//=============================================================================
+// 多流 Jitter Buffer 实现
+//=============================================================================
+
+struct MultiStreamJitterBuffer {
+    int             max_streams;
+    StreamInfo*     streams;
+    JitterConfig    config;
+    Mutex           mutex;
+    
+    // 解码器工厂
+    DecoderCreateFunc   decoder_create;
+    DecoderDestroyFunc  decoder_destroy;
+    OpusDecodeFunc      decode_func;
+    PlcFunc             plc_func;
+    
+    // 混音缓冲区
+    int32_t         mix_buffer[AUDIO_FRAME_SAMPLES];
+    int16_t         stream_buffer[AUDIO_FRAME_SAMPLES];
+};
+
+/**
+ * @brief 查找或创建 SSRC 对应的流
+ */
+static StreamInfo* find_or_create_stream(MultiStreamJitterBuffer* msjb, uint32_t ssrc) {
+    StreamInfo* inactive_slot = NULL;
+    uint64_t oldest_time = UINT64_MAX;
+    StreamInfo* oldest_slot = NULL;
+    
+    // 先查找已有的流
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (s->active && s->ssrc == ssrc) {
+            s->last_active = GetTickCount64Ms();
+            return s;
+        }
+        if (!s->active && !inactive_slot) {
+            inactive_slot = s;
+        }
+        if (s->active && s->last_active < oldest_time) {
+            oldest_time = s->last_active;
+            oldest_slot = s;
+        }
+    }
+    
+    // 使用空闲槽或替换最老的槽
+    StreamInfo* slot = inactive_slot ? inactive_slot : oldest_slot;
+    if (!slot) return NULL;
+    
+    // 如果替换已有流，先清理
+    if (slot->active) {
+        LOG_DEBUG("MultiStreamJB: replacing stream SSRC=%u with SSRC=%u", slot->ssrc, ssrc);
+        if (slot->jitter_buffer) {
+            JitterBuffer_Destroy(slot->jitter_buffer);
+        }
+        if (slot->decoder && msjb->decoder_destroy) {
+            msjb->decoder_destroy(slot->decoder);
+        }
+    }
+    
+    // 创建新流
+    slot->ssrc = ssrc;
+    slot->jitter_buffer = JitterBuffer_Create(&msjb->config);
+    if (!slot->jitter_buffer) {
+        return NULL;
+    }
+    
+    // 创建解码器
+    if (msjb->decoder_create) {
+        slot->decoder = msjb->decoder_create();
+        if (slot->decoder) {
+            JitterBuffer_SetDecoder(slot->jitter_buffer, slot->decoder, msjb->decode_func);
+            JitterBuffer_SetPlc(slot->jitter_buffer, msjb->plc_func);
+        }
+    }
+    
+    slot->last_active = GetTickCount64Ms();
+    slot->active = true;
+    
+    LOG_INFO("MultiStreamJB: created stream for SSRC=%u", ssrc);
+    return slot;
+}
+
+MultiStreamJitterBuffer* MultiStreamJB_Create(int max_streams, const JitterConfig* config) {
+    if (max_streams <= 0) max_streams = MAX_CLIENTS;
+    
+    MultiStreamJitterBuffer* msjb = (MultiStreamJitterBuffer*)calloc(1, sizeof(MultiStreamJitterBuffer));
+    if (!msjb) return NULL;
+    
+    msjb->streams = (StreamInfo*)calloc(max_streams, sizeof(StreamInfo));
+    if (!msjb->streams) {
+        free(msjb);
+        return NULL;
+    }
+    
+    msjb->max_streams = max_streams;
+    
+    if (config) {
+        msjb->config = *config;
+    } else {
+        msjb->config.min_delay_ms = JITTER_MIN_MS;
+        msjb->config.max_delay_ms = JITTER_MAX_MS;
+        msjb->config.target_delay_ms = JITTER_BUFFER_MS;
+        msjb->config.adaptive = true;
+    }
+    
+    MutexInit(&msjb->mutex);
+    
+    LOG_INFO("MultiStreamJB created: max_streams=%d", max_streams);
+    return msjb;
+}
+
+void MultiStreamJB_Destroy(MultiStreamJitterBuffer* msjb) {
+    if (!msjb) return;
+    
+    MutexLock(&msjb->mutex);
+    
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (s->active) {
+            if (s->jitter_buffer) {
+                JitterBuffer_Destroy(s->jitter_buffer);
+            }
+            if (s->decoder && msjb->decoder_destroy) {
+                msjb->decoder_destroy(s->decoder);
+            }
+            s->active = false;
+        }
+    }
+    
+    MutexUnlock(&msjb->mutex);
+    MutexDestroy(&msjb->mutex);
+    
+    free(msjb->streams);
+    free(msjb);
+    
+    LOG_INFO("MultiStreamJB destroyed");
+}
+
+void MultiStreamJB_Reset(MultiStreamJitterBuffer* msjb) {
+    if (!msjb) return;
+    
+    MutexLock(&msjb->mutex);
+    
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (s->active && s->jitter_buffer) {
+            JitterBuffer_Reset(s->jitter_buffer);
+        }
+    }
+    
+    MutexUnlock(&msjb->mutex);
+    LOG_DEBUG("MultiStreamJB reset");
+}
+
+int MultiStreamJB_Put(MultiStreamJitterBuffer* msjb, const RtpHeader* rtp,
+                      const uint8_t* payload, uint16_t payload_len) {
+    if (!msjb || !rtp || !payload || payload_len == 0) {
+        return -1;
+    }
+    
+    MutexLock(&msjb->mutex);
+    
+    StreamInfo* stream = find_or_create_stream(msjb, rtp->ssrc);
+    if (!stream || !stream->jitter_buffer) {
+        MutexUnlock(&msjb->mutex);
+        return -2;
+    }
+    
+    int result = JitterBuffer_Put(stream->jitter_buffer, rtp, payload, payload_len);
+    
+    MutexUnlock(&msjb->mutex);
+    return result;
+}
+
+int MultiStreamJB_GetMixed(MultiStreamJitterBuffer* msjb, int16_t* samples, int max_samples) {
+    if (!msjb || !samples || max_samples < AUDIO_FRAME_SAMPLES) {
+        return -1;
+    }
+    
+    MutexLock(&msjb->mutex);
+    
+    // 清空混音缓冲区
+    memset(msjb->mix_buffer, 0, sizeof(msjb->mix_buffer));
+    
+    int active_count = 0;
+    int output_samples = 0;
+    
+    // 从每个活跃流获取音频并混音
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (!s->active || !s->jitter_buffer) continue;
+        
+        int got = JitterBuffer_Get(s->jitter_buffer, msjb->stream_buffer, AUDIO_FRAME_SAMPLES);
+        if (got > 0) {
+            // 累加到混音缓冲区
+            for (int j = 0; j < got; j++) {
+                msjb->mix_buffer[j] += msjb->stream_buffer[j];
+            }
+            if (got > output_samples) {
+                output_samples = got;
+            }
+            active_count++;
+        }
+    }
+    
+    MutexUnlock(&msjb->mutex);
+    
+    if (output_samples == 0) {
+        return 0;
+    }
+    
+    // 软限幅输出
+    int out_count = MIN(output_samples, max_samples);
+    for (int i = 0; i < out_count; i++) {
+        int32_t val = msjb->mix_buffer[i];
+        // 软限幅防止爆音
+        if (val > 32767) val = 32767;
+        if (val < -32768) val = -32768;
+        samples[i] = (int16_t)val;
+    }
+    
+    return out_count;
+}
+
+int MultiStreamJB_GetActiveStreams(MultiStreamJitterBuffer* msjb) {
+    if (!msjb) return 0;
+    
+    int count = 0;
+    MutexLock(&msjb->mutex);
+    for (int i = 0; i < msjb->max_streams; i++) {
+        if (msjb->streams[i].active) {
+            count++;
+        }
+    }
+    MutexUnlock(&msjb->mutex);
+    return count;
+}
+
+void MultiStreamJB_GetStats(MultiStreamJitterBuffer* msjb, JitterStats* stats) {
+    if (!msjb || !stats) return;
+    
+    memset(stats, 0, sizeof(JitterStats));
+    
+    MutexLock(&msjb->mutex);
+    
+    int active_count = 0;
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (s->active && s->jitter_buffer) {
+            JitterStats stream_stats;
+            JitterBuffer_GetStats(s->jitter_buffer, &stream_stats);
+            
+            stats->packets_received += stream_stats.packets_received;
+            stats->packets_lost += stream_stats.packets_lost;
+            stats->packets_late += stream_stats.packets_late;
+            stats->packets_reorder += stream_stats.packets_reorder;
+            stats->underruns += stream_stats.underruns;
+            stats->overruns += stream_stats.overruns;
+            stats->avg_jitter_ms += stream_stats.avg_jitter_ms;
+            active_count++;
+        }
+    }
+    
+    if (active_count > 0) {
+        stats->avg_jitter_ms /= active_count;
+    }
+    
+    if (stats->packets_received + stats->packets_lost > 0) {
+        stats->loss_rate = (float)stats->packets_lost / 
+                           (stats->packets_received + stats->packets_lost);
+    }
+    
+    MutexUnlock(&msjb->mutex);
+}
+
+void MultiStreamJB_SetDecoderFactory(MultiStreamJitterBuffer* msjb,
+                                      DecoderCreateFunc create_func,
+                                      DecoderDestroyFunc destroy_func,
+                                      OpusDecodeFunc decode_func,
+                                      PlcFunc plc_func) {
+    if (!msjb) return;
+    
+    MutexLock(&msjb->mutex);
+    msjb->decoder_create = create_func;
+    msjb->decoder_destroy = destroy_func;
+    msjb->decode_func = decode_func;
+    msjb->plc_func = plc_func;
+    MutexUnlock(&msjb->mutex);
+}
+
+void MultiStreamJB_CleanupInactive(MultiStreamJitterBuffer* msjb, uint32_t timeout_ms) {
+    if (!msjb) return;
+    
+    uint64_t now = GetTickCount64Ms();
+    
+    MutexLock(&msjb->mutex);
+    
+    for (int i = 0; i < msjb->max_streams; i++) {
+        StreamInfo* s = &msjb->streams[i];
+        if (s->active && (now - s->last_active) > timeout_ms) {
+            LOG_INFO("MultiStreamJB: cleaning up inactive stream SSRC=%u", s->ssrc);
+            
+            if (s->jitter_buffer) {
+                JitterBuffer_Destroy(s->jitter_buffer);
+                s->jitter_buffer = NULL;
+            }
+            if (s->decoder && msjb->decoder_destroy) {
+                msjb->decoder_destroy(s->decoder);
+                s->decoder = NULL;
+            }
+            s->active = false;
+        }
+    }
+    
+    MutexUnlock(&msjb->mutex);
+}

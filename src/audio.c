@@ -4,6 +4,7 @@
  */
 
 #include "audio.h"
+#include "audio_dsp.h"
 
 //=============================================================================
 // 内部常量
@@ -42,6 +43,10 @@ typedef struct {
     int         playbackQueueTail;
     int         playbackQueueSize;
     
+    // DSP 处理器 (用于采集端噪声门限)
+    AudioDsp*   captureDsp;
+    bool        captureDspEnabled;
+    
     bool        initialized;
 } AudioState;
 
@@ -60,13 +65,21 @@ static void CALLBACK WaveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
             int16_t* samples = (int16_t*)hdr->lpData;
             int count = hdr->dwBytesRecorded / sizeof(int16_t);
             
-            // 计算电平
-            float level = 0;
-            for (int i = 0; i < count; i++) {
-                float s = (float)abs(samples[i]) / 32768.0f;
-                if (s > level) level = s;
+            // DSP 处理 (噪声门限)
+            float dsp_gain = 1.0f;
+            if (g_audio.captureDspEnabled && g_audio.captureDsp) {
+                AudioAnalysis analysis;
+                dsp_gain = AudioDsp_Process(g_audio.captureDsp, samples, count, &analysis);
+                g_audio.captureLevel = AudioDsp_DbToLinear(analysis.rms_db);
+            } else {
+                // 计算电平 (原有方式)
+                float level = 0;
+                for (int i = 0; i < count; i++) {
+                    float s = (float)abs(samples[i]) / 32768.0f;
+                    if (s > level) level = s;
+                }
+                g_audio.captureLevel = level;
             }
-            g_audio.captureLevel = level;
             
             // 应用音量
             if (!g_audio.captureMute && g_audio.captureVolume != 1.0f) {
@@ -105,9 +118,16 @@ bool Audio_Init(void) {
     MutexInit(&g_audio.playbackMutex);
     g_audio.captureVolume = 1.0f;
     g_audio.playbackVolume = 1.0f;
+    
+    // 创建采集端 DSP 处理器
+    AudioDspConfig dsp_config;
+    AudioDsp_GetDefaultConfig(&dsp_config);
+    g_audio.captureDsp = AudioDsp_Create(&dsp_config);
+    g_audio.captureDspEnabled = true;  // 默认启用
+    
     g_audio.initialized = true;
     
-    LOG_INFO("Audio engine initialized");
+    LOG_INFO("Audio engine initialized (DSP enabled)");
     return true;
 }
 
@@ -116,6 +136,12 @@ void Audio_Shutdown(void) {
     
     Audio_StopCapture();
     Audio_StopPlayback();
+    
+    // 销毁 DSP 处理器
+    if (g_audio.captureDsp) {
+        AudioDsp_Destroy(g_audio.captureDsp);
+        g_audio.captureDsp = NULL;
+    }
     
     MutexDestroy(&g_audio.playbackMutex);
     g_audio.initialized = false;
@@ -349,4 +375,16 @@ void Audio_Mix(int16_t* output, const int16_t** inputs, int input_count, int sam
         // 软限幅
         output[i] = (int16_t)CLAMP(sum, -32768, 32767);
     }
+}
+
+void Audio_EnableCaptureDsp(bool enable) {
+    g_audio.captureDspEnabled = enable;
+    if (g_audio.captureDsp) {
+        AudioDsp_Reset(g_audio.captureDsp);
+    }
+    LOG_INFO("Audio capture DSP %s", enable ? "enabled" : "disabled");
+}
+
+bool Audio_IsCaptureDspEnabled(void) {
+    return g_audio.captureDspEnabled;
 }

@@ -138,4 +138,15 @@ int OpusCodec_JitterDecode(void* decoder, const uint8_t* data, int len,
  */
 int OpusCodec_JitterPlc(void* decoder, int16_t* pcm, int frame_size);
 
+/**
+ * @brief 创建独立的 Opus 解码器 (用于 MultiStreamJitterBuffer)
+ * @return 原始 OpusDecoder 指针
+ */
+void* OpusCodec_CreateDecoder(void);
+
+/**
+ * @brief 销毁独立的 Opus 解码器
+ */
+void OpusCodec_DestroyDecoder(void* decoder);
+
 #endif // OPUS_CODEC_H
