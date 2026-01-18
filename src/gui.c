@@ -29,6 +29,11 @@ static struct {
     // 客户端页面控件
     HWND hCliServers, hCliRefresh, hCliConnect, hCliDisconnect, hCliPeers, hCliStatus;
     HWND hCliGroupServers, hCliGroupUsers;
+    // 客户端手动连接控件
+    HWND hCliGroupManual;
+    HWND hCliManualIp, hCliManualTcpPort, hCliManualUdpPort, hCliManualDiscPort;
+    HWND hCliManualConnect;
+    HWND hCliLblIp, hCliLblTcpPort, hCliLblUdpPort, hCliLblDiscPort;
     // 公共控件
     HWND hMuteBtn, hInputSlider, hOutputSlider, hInputLevel, hOutputLevel, hStatus;
     HWND hHeaderLabel, hAudioGroup;
@@ -218,56 +223,108 @@ static void CreateClientControls(void) {
     int baseY = 75;
     int y = baseY;
 
-    // 服务器列表区域
-    g.hCliGroupServers = CreateWindowExW(0, L"BUTTON", L" 发现的服务器 ", WS_CHILD|BS_GROUPBOX,
-        20, y, 535, 120, g.hMain, NULL, g.hInstance, NULL);
+    // 手动连接区域（放在最上面）
+    g.hCliGroupManual = CreateWindowExW(0, L"BUTTON", L" 手动连接 ", WS_CHILD|BS_GROUPBOX,
+        20, y, 535, 55, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliGroupManual, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
+    y += 18;
+
+    // IP地址
+    g.hCliLblIp = CreateWindowExW(0, L"STATIC", L"IP:", WS_CHILD,
+        30, y+3, 20, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualIp = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"192.168.1.100",
+        WS_CHILD|ES_AUTOHSCROLL, 52, y, 100, 22,
+        g.hMain, (HMENU)IDC_MANUAL_IP, g.hInstance, NULL);
+    SendMessage(g.hCliManualIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    // TCP端口
+    g.hCliLblTcpPort = CreateWindowExW(0, L"STATIC", L"TCP:", WS_CHILD,
+        160, y+3, 28, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualTcpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"5000",
+        WS_CHILD|ES_NUMBER, 190, y, 50, 22,
+        g.hMain, (HMENU)IDC_MANUAL_TCP, g.hInstance, NULL);
+    SendMessage(g.hCliManualTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    // UDP端口
+    g.hCliLblUdpPort = CreateWindowExW(0, L"STATIC", L"UDP:", WS_CHILD,
+        248, y+3, 30, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualUdpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"6000",
+        WS_CHILD|ES_NUMBER, 280, y, 50, 22,
+        g.hMain, (HMENU)IDC_MANUAL_UDP, g.hInstance, NULL);
+    SendMessage(g.hCliManualUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    // 发现端口
+    g.hCliLblDiscPort = CreateWindowExW(0, L"STATIC", L"发现:", WS_CHILD,
+        338, y+3, 35, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblDiscPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualDiscPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"37020",
+        WS_CHILD|ES_NUMBER, 375, y, 50, 22,
+        g.hMain, (HMENU)IDC_MANUAL_DISC, g.hInstance, NULL);
+    SendMessage(g.hCliManualDiscPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    // 手动连接按钮
+    g.hCliManualConnect = CreateWindowExW(0, L"BUTTON", L"连接", WS_CHILD|BS_PUSHBUTTON,
+        435, y-1, 70, 24, g.hMain, (HMENU)IDC_BTN_MANUAL_CONN, g.hInstance, NULL);
+    SendMessage(g.hCliManualConnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
+    y += 35;
+
+    // 服务器列表区域（自动发现）
+    g.hCliGroupServers = CreateWindowExW(0, L"BUTTON", L" 自动发现的服务器 ", WS_CHILD|BS_GROUPBOX,
+        20, y, 535, 95, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliGroupServers, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
     y += 18;
 
     g.hCliServers = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, NULL,
-        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 70,
+        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 48,
         g.hMain, (HMENU)IDC_SERVER_LIST, g.hInstance, NULL);
     SendMessage(g.hCliServers, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
-    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 150, L"服务器名称", 0, 0, 0, 0};
+    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 140, L"服务器名称", 0, 0, 0, 0};
     ListView_InsertColumn(g.hCliServers, 0, &col);
-    col.cx = 100; col.pszText = L"IP地址";
+    col.cx = 95; col.pszText = L"IP地址";
     ListView_InsertColumn(g.hCliServers, 1, &col);
-    col.cx = 70; col.pszText = L"TCP端口";
+    col.cx = 60; col.pszText = L"TCP";
     ListView_InsertColumn(g.hCliServers, 2, &col);
-    col.cx = 70; col.pszText = L"UDP端口";
+    col.cx = 60; col.pszText = L"UDP";
     ListView_InsertColumn(g.hCliServers, 3, &col);
-    col.cx = 55; col.pszText = L"在线";
+    col.cx = 50; col.pszText = L"在线";
     ListView_InsertColumn(g.hCliServers, 4, &col);
     ListView_SetExtendedListViewStyle(g.hCliServers, LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);
-    y += 75;
+    y += 53;
 
     // 按钮行
     g.hCliRefresh = CreateWindowExW(0, L"BUTTON", L"刷新", WS_CHILD|BS_PUSHBUTTON,
-        30, y, 80, 26, g.hMain, (HMENU)IDC_BTN_REFRESH, g.hInstance, NULL);
+        30, y, 70, 24, g.hMain, (HMENU)IDC_BTN_REFRESH, g.hInstance, NULL);
     SendMessage(g.hCliRefresh, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
 
-    g.hCliConnect = CreateWindowExW(0, L"BUTTON", L"连接", WS_CHILD|BS_PUSHBUTTON,
-        120, y, 80, 26, g.hMain, (HMENU)IDC_BTN_CONNECT, g.hInstance, NULL);
+    g.hCliConnect = CreateWindowExW(0, L"BUTTON", L"连接选中", WS_CHILD|BS_PUSHBUTTON,
+        108, y, 80, 24, g.hMain, (HMENU)IDC_BTN_CONNECT, g.hInstance, NULL);
     SendMessage(g.hCliConnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
 
     g.hCliDisconnect = CreateWindowExW(0, L"BUTTON", L"断开", WS_CHILD|WS_DISABLED|BS_PUSHBUTTON,
-        210, y, 80, 26, g.hMain, (HMENU)IDC_BTN_DISCONNECT, g.hInstance, NULL);
+        196, y, 70, 24, g.hMain, (HMENU)IDC_BTN_DISCONNECT, g.hInstance, NULL);
     SendMessage(g.hCliDisconnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
 
     g.hCliStatus = CreateWindowExW(0, L"STATIC", L"状态: 未连接", WS_CHILD|SS_LEFT,
-        310, y+5, 230, 20, g.hMain, NULL, g.hInstance, NULL);
+        280, y+4, 260, 20, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliStatus, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-    y += 33;
+    y += 30;
 
     // 在线用户区域
     g.hCliGroupUsers = CreateWindowExW(0, L"BUTTON", L" 在线用户 ", WS_CHILD|BS_GROUPBOX,
-        20, y, 535, 100, g.hMain, NULL, g.hInstance, NULL);
+        20, y, 535, 82, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliGroupUsers, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
     y += 18;
 
     g.hCliPeers = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, NULL,
-        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 72,
+        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 54,
         g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliPeers, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
@@ -370,6 +427,17 @@ static void SwitchTab(int tab) {
     ShowWindow(g.hCliDisconnect, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliPeers, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliStatus, showClient ? SW_SHOW : SW_HIDE);
+    // 手动连接控件
+    ShowWindow(g.hCliGroupManual, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliManualIp, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliManualTcpPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliManualUdpPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliManualDiscPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliManualConnect, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliLblIp, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliLblTcpPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliLblUdpPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliLblDiscPort, showClient ? SW_SHOW : SW_HIDE);
 }
 
 static void UpdateUI(void) {
@@ -390,6 +458,12 @@ static void UpdateUI(void) {
     EnableWindow(g.hCliRefresh, !g.clientConnected);
     EnableWindow(g.hCliConnect, !g.clientConnected);
     EnableWindow(g.hCliDisconnect, g.clientConnected);
+    // 手动连接控件
+    EnableWindow(g.hCliManualIp, !g.clientConnected);
+    EnableWindow(g.hCliManualTcpPort, !g.clientConnected);
+    EnableWindow(g.hCliManualUdpPort, !g.clientConnected);
+    EnableWindow(g.hCliManualDiscPort, !g.clientConnected);
+    EnableWindow(g.hCliManualConnect, !g.clientConnected);
     
     if (!g.clientConnected) {
         SetWindowTextW(g.hCliStatus, L"状态: 未连接");
@@ -397,22 +471,25 @@ static void UpdateUI(void) {
 }
 
 static void OnServerStart(void) {
-    wchar_t name[64], port[16], udpPort[16];
+    wchar_t name[64], port[16], udpPort[16], discPort[16];
     GetWindowTextW(g.hSrvName, name, 64);
     GetWindowTextW(g.hSrvPort, port, 16);
     GetWindowTextW(g.hSrvUdpPort, udpPort, 16);
+    GetWindowTextW(g.hSrvDiscPort, discPort, 16);
     
     char nameA[64];
     WideCharToMultiByte(CP_UTF8, 0, name, -1, nameA, 64, NULL, NULL);
     int p = _wtoi(port);
     int udpP = _wtoi(udpPort);
+    int discP = _wtoi(discPort);
     if (p <= 0 || p > 65535) p = 5000;
     if (udpP <= 0 || udpP > 65535) udpP = 6000;
+    if (discP <= 0 || discP > 65535) discP = 37020;
     
-    LOG_INFO("GUI: OnServerStart called - name=%s, tcp_port=%d, udp_port=%d", nameA, p, udpP);
+    LOG_INFO("GUI: OnServerStart called - name=%s, tcp_port=%d, udp_port=%d, disc_port=%d", nameA, p, udpP, discP);
     
     if (g.callbacks.onStartServer) {
-        g.callbacks.onStartServer(nameA, (uint16_t)p, g.callbacks.userdata);
+        g.callbacks.onStartServer(nameA, (uint16_t)p, (uint16_t)udpP, (uint16_t)discP, g.callbacks.userdata);
     } else {
         LOG_ERROR("GUI: onStartServer callback is NULL!");
         MessageBoxW(g.hMain, L"内部错误：回调函数未设置", L"错误", MB_OK|MB_ICONERROR);
@@ -425,27 +502,58 @@ static void OnServerStop(void) {
 }
 
 static void OnClientRefresh(void) {
-    LOG_INFO("GUI: OnClientRefresh called");
-    if (g.callbacks.onRefreshServers) g.callbacks.onRefreshServers(g.callbacks.userdata);
+    wchar_t discPortW[16];
+    GetWindowTextW(g.hCliManualDiscPort, discPortW, 16);
+    int discP = _wtoi(discPortW);
+    if (discP <= 0 || discP > 65535) discP = 37020;
+    
+    LOG_INFO("GUI: OnClientRefresh called with discovery_port=%d", discP);
+    if (g.callbacks.onRefreshServers) g.callbacks.onRefreshServers((uint16_t)discP, g.callbacks.userdata);
 }
 
 static void OnClientConnect(void) {
     int sel = ListView_GetNextItem(g.hCliServers, -1, LVNI_SELECTED);
     if (sel < 0) {
-        MessageBoxW(g.hMain, L"请先选择一个服务器", L"连接", MB_OK|MB_ICONINFORMATION);
+        MessageBoxW(g.hMain, L"请先选择一个服务器，或使用手动连接", L"连接", MB_OK|MB_ICONINFORMATION);
         return;
     }
-    wchar_t ip[64], portW[16];
+    wchar_t ip[64], tcpPortW[16], udpPortW[16];
     ListView_GetItemText(g.hCliServers, sel, 1, ip, 64);
-    ListView_GetItemText(g.hCliServers, sel, 2, portW, 16);
+    ListView_GetItemText(g.hCliServers, sel, 2, tcpPortW, 16);
+    ListView_GetItemText(g.hCliServers, sel, 3, udpPortW, 16);
     
     char ipA[64];
     WideCharToMultiByte(CP_UTF8, 0, ip, -1, ipA, 64, NULL, NULL);
-    int port = _wtoi(portW);
-    if (port <= 0) port = 5000;
+    int tcpPort = _wtoi(tcpPortW);
+    int udpPort = _wtoi(udpPortW);
+    if (tcpPort <= 0) tcpPort = 5000;
+    if (udpPort <= 0) udpPort = 6000;
     
-    LOG_INFO("GUI: OnClientConnect called - ip=%s, port=%d", ipA, port);
-    if (g.callbacks.onConnect) g.callbacks.onConnect(ipA, (uint16_t)port, g.callbacks.userdata);
+    LOG_INFO("GUI: OnClientConnect called - ip=%s, tcp_port=%d, udp_port=%d", ipA, tcpPort, udpPort);
+    if (g.callbacks.onConnect) g.callbacks.onConnect(ipA, (uint16_t)tcpPort, (uint16_t)udpPort, g.callbacks.userdata);
+}
+
+// 手动连接（用于无法自动发现服务器的情况）
+static void OnClientManualConnect(void) {
+    wchar_t ipW[64], tcpPortW[16], udpPortW[16];
+    GetWindowTextW(g.hCliManualIp, ipW, 64);
+    GetWindowTextW(g.hCliManualTcpPort, tcpPortW, 16);
+    GetWindowTextW(g.hCliManualUdpPort, udpPortW, 16);
+    
+    char ipA[64];
+    WideCharToMultiByte(CP_UTF8, 0, ipW, -1, ipA, 64, NULL, NULL);
+    int tcpPort = _wtoi(tcpPortW);
+    int udpPort = _wtoi(udpPortW);
+    
+    if (strlen(ipA) == 0) {
+        MessageBoxW(g.hMain, L"请输入服务器IP地址", L"手动连接", MB_OK|MB_ICONWARNING);
+        return;
+    }
+    if (tcpPort <= 0 || tcpPort > 65535) tcpPort = 5000;
+    if (udpPort <= 0 || udpPort > 65535) udpPort = 6000;
+    
+    LOG_INFO("GUI: OnClientManualConnect called - ip=%s, tcp_port=%d, udp_port=%d", ipA, tcpPort, udpPort);
+    if (g.callbacks.onConnect) g.callbacks.onConnect(ipA, (uint16_t)tcpPort, (uint16_t)udpPort, g.callbacks.userdata);
 }
 
 static void OnClientDisconnect(void) {
@@ -500,6 +608,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case IDC_BTN_CONNECT: 
             LOG_INFO("WM_COMMAND: IDC_BTN_CONNECT received");
             OnClientConnect(); 
+            break;
+        case IDC_BTN_MANUAL_CONN:
+            LOG_INFO("WM_COMMAND: IDC_BTN_MANUAL_CONN received");
+            OnClientManualConnect();
             break;
         case IDC_BTN_DISCONNECT: 
             LOG_INFO("WM_COMMAND: IDC_BTN_DISCONNECT received");

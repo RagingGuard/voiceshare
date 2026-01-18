@@ -13,11 +13,14 @@
 // GUI 回调
 //=============================================================================
 typedef struct {
-    void (*onStartServer)(const char* name, uint16_t port, void* userdata);
+    // 服务器端口配置: tcp_port=控制端口, udp_port=音频端口, discovery_port=发现端口
+    void (*onStartServer)(const char* name, uint16_t tcp_port, uint16_t udp_port, uint16_t discovery_port, void* userdata);
     void (*onStopServer)(void* userdata);
-    void (*onConnect)(const char* ip, uint16_t port, void* userdata);
+    // 客户端连接: tcp_port=控制端口, udp_port=音频端口
+    void (*onConnect)(const char* ip, uint16_t tcp_port, uint16_t udp_port, void* userdata);
     void (*onDisconnect)(void* userdata);
-    void (*onRefreshServers)(void* userdata);
+    // discovery_port: 服务发现端口
+    void (*onRefreshServers)(uint16_t discovery_port, void* userdata);
     void (*onMuteChanged)(bool muted, void* userdata);
     void (*onVolumeChanged)(int input, int output, void* userdata);
     void* userdata;

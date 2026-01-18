@@ -55,6 +55,12 @@ const char* Client_GetName(void);
 void Client_SetCallbacks(const ClientCallbacks* callbacks);
 
 /**
+ * @brief 设置发现端口
+ * @param port UDP发现端口
+ */
+void Client_SetDiscoveryPort(uint16_t port);
+
+/**
  * @brief 开始服务发现
  */
 bool Client_StartDiscovery(void);

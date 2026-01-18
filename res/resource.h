@@ -38,6 +38,12 @@
 #define IDC_PEER_LIST       1030
 #define IDC_STATUS          1040
 #define IDC_CLIENT_NAME     1050
+// 客户端手动连接控件
+#define IDC_MANUAL_IP       1060
+#define IDC_MANUAL_TCP      1061
+#define IDC_MANUAL_UDP      1062
+#define IDC_MANUAL_DISC     1063
+#define IDC_BTN_MANUAL_CONN 1064
 
 // 定时器
 #define IDT_UPDATE          1

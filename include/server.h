@@ -41,10 +41,11 @@ void Server_Shutdown(void);
  * @param name 服务器名称
  * @param tcp_port TCP 控制端口
  * @param udp_port UDP 音频端口
+ * @param discovery_port UDP 发现端口
  * @param callbacks 事件回调
  */
 bool Server_Start(const char* name, uint16_t tcp_port, uint16_t udp_port, 
-                  const ServerCallbacks* callbacks);
+                  uint16_t discovery_port, const ServerCallbacks* callbacks);
 
 /**
  * @brief 停止服务器

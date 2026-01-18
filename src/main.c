@@ -110,8 +110,9 @@ static void OnClientError(const char* msg, void* userdata) {
     Gui_ShowError(msg);
 }
 
-static void OnGuiStartServer(const char* name, uint16_t port, void* userdata) {
-    LOG_INFO("OnGuiStartServer called: name=%s, port=%d", name, port);
+static void OnGuiStartServer(const char* name, uint16_t tcp_port, uint16_t udp_port, uint16_t discovery_port, void* userdata) {
+    LOG_INFO("OnGuiStartServer called: name=%s, tcp_port=%d, udp_port=%d, discovery_port=%d", 
+             name, tcp_port, udp_port, discovery_port);
     
     g_isServerMode = true;
     Client_StopDiscovery();
@@ -139,7 +140,7 @@ static void OnGuiStartServer(const char* name, uint16_t port, void* userdata) {
     };
     
     LOG_INFO("Starting server...");
-    if (!Server_Start(name, port, AUDIO_UDP_PORT, &cb)) {
+    if (!Server_Start(name, tcp_port, udp_port, discovery_port, &cb)) {
         LOG_ERROR("Server_Start failed");
         Gui_ShowError("Failed to start server, check if port is in use");
         return;
@@ -166,7 +167,9 @@ static void OnGuiStopServer(void* userdata) {
     Client_StartDiscovery();
 }
 
-static void OnGuiConnect(const char* ip, uint16_t port, void* userdata) {
+static void OnGuiConnect(const char* ip, uint16_t tcp_port, uint16_t udp_port, void* userdata) {
+    LOG_INFO("OnGuiConnect called: ip=%s, tcp_port=%d, udp_port=%d", ip, tcp_port, udp_port);
+    
     g_isServerMode = false;
     Server_Stop();
     
@@ -180,18 +183,8 @@ static void OnGuiConnect(const char* ip, uint16_t port, void* userdata) {
         }
     }
     
-    ServerInfo servers[MAX_SERVERS];
-    int count = Client_GetServers(servers, MAX_SERVERS);
-    uint16_t audio_port = AUDIO_UDP_PORT;
-    
-    for (int i = 0; i < count; i++) {
-        if (strcmp(servers[i].ip, ip) == 0 && servers[i].tcp_port == port) {
-            audio_port = servers[i].audio_udp_port;
-            break;
-        }
-    }
-    
-    if (!Client_Connect(ip, port, audio_port)) {
+    // 直接使用传入的 udp_port（从GUI获取，可能是自动发现或手动输入的）
+    if (!Client_Connect(ip, tcp_port, udp_port)) {
         Gui_ShowError("Failed to connect to server");
         return;
     }
@@ -219,7 +212,10 @@ static void OnGuiDisconnect(void* userdata) {
     }
 }
 
-static void OnGuiRefreshServers(void* userdata) {
+static void OnGuiRefreshServers(uint16_t discovery_port, void* userdata) {
+    LOG_INFO("OnGuiRefreshServers called with discovery_port=%d", discovery_port);
+    // 设置发现端口并刷新
+    Client_SetDiscoveryPort(discovery_port);
     ServerInfo servers[MAX_SERVERS];
     int count = Client_GetServers(servers, MAX_SERVERS);
     Gui_UpdateServerList(servers, count);

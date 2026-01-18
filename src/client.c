@@ -25,6 +25,7 @@ typedef struct {
     char            name[MAX_NAME_LEN];
     uint32_t        client_id;
     uint32_t        ssrc;               // 分配的 SSRC
+    uint16_t        discovery_port;     // 发现端口（可配置）
     
     // 网络
     SOCKET          udp_discovery;      // UDP 发现
@@ -100,6 +101,7 @@ bool Client_Init(void) {
     
     g_client.client_id = (uint32_t)time(NULL) ^ GetCurrentProcessId();
     g_client.ssrc = g_client.client_id;
+    g_client.discovery_port = DISCOVERY_PORT;  // 默认发现端口
     strcpy(g_client.name, "User");
     g_client.initialized = true;
     
@@ -133,6 +135,13 @@ const char* Client_GetName(void) {
 void Client_SetCallbacks(const ClientCallbacks* callbacks) {
     if (callbacks) {
         g_client.callbacks = *callbacks;
+    }
+}
+
+void Client_SetDiscoveryPort(uint16_t port) {
+    if (port > 0 && port <= 65535) {
+        g_client.discovery_port = port;
+        LOG_INFO("Discovery port set to %d", port);
     }
 }
 
@@ -439,7 +448,7 @@ static DWORD WINAPI DiscoveryThreadProc(LPVOID param) {
     while (g_client.discovering) {
         uint32_t now = GetTickCountMs();
         
-        // 定期发送广播
+        // 定期发送广播（使用配置的发现端口）
         if (now - last_broadcast >= DISCOVERY_INTERVAL) {
             DiscoveryRequest req;
             PacketHeader_Init(&req.header, MSG_DISCOVERY_REQUEST, 
@@ -448,7 +457,7 @@ static DWORD WINAPI DiscoveryThreadProc(LPVOID param) {
             req.service_mask = 0;
             strncpy(req.client_name, g_client.name, MAX_NAME_LEN);
             
-            Network_UdpBroadcast(g_client.udp_discovery, &req, sizeof(req), DISCOVERY_PORT);
+            Network_UdpBroadcast(g_client.udp_discovery, &req, sizeof(req), g_client.discovery_port);
             last_broadcast = now;
         }
         

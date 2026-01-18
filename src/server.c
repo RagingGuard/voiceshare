@@ -44,11 +44,12 @@ typedef struct {
     char            name[MAX_NAME_LEN];
     uint16_t        tcp_port;           // TCP 控制端口
     uint16_t        udp_audio_port;     // UDP 音频端口
+    uint16_t        discovery_port;     // UDP 发现端口
     uint32_t        server_id;
     uint32_t        ssrc;               // 服务器 SSRC
     
     // 网络
-    SOCKET          udp_discovery;      // UDP 发现 (37020)
+    SOCKET          udp_discovery;      // UDP 发现
     SOCKET          tcp_control;        // TCP 控制监听
     SOCKET          udp_audio;          // UDP 音频
     
@@ -122,20 +123,21 @@ void Server_Shutdown(void) {
 }
 
 bool Server_Start(const char* name, uint16_t tcp_port, uint16_t udp_port, 
-                  const ServerCallbacks* callbacks) {
+                  uint16_t discovery_port, const ServerCallbacks* callbacks) {
     if (!g_server.initialized || g_server.running) return false;
     
     strncpy(g_server.name, name, MAX_NAME_LEN - 1);
     g_server.tcp_port = tcp_port;
     g_server.udp_audio_port = udp_port;
+    g_server.discovery_port = discovery_port;
     if (callbacks) {
         g_server.callbacks = *callbacks;
     }
     
-    // 创建 UDP 发现 socket
-    g_server.udp_discovery = Network_CreateUdpBroadcast(DISCOVERY_PORT, true);
+    // 创建 UDP 发现 socket（使用自定义端口）
+    g_server.udp_discovery = Network_CreateUdpBroadcast(discovery_port, true);
     if (g_server.udp_discovery == INVALID_SOCKET) {
-        LOG_ERROR("Failed to create UDP discovery socket");
+        LOG_ERROR("Failed to create UDP discovery socket on port %d", discovery_port);
         return false;
     }
     
@@ -174,8 +176,8 @@ bool Server_Start(const char* name, uint16_t tcp_port, uint16_t udp_port,
     ThreadCreate(&g_server.tcp_recv_thread, TcpRecvThreadProc, NULL);
     ThreadCreate(&g_server.udp_audio_thread, UdpAudioThreadProc, NULL);
     
-    LOG_INFO("Server started: %s (TCP:%d, UDP Audio:%d)", 
-             name, tcp_port, g_server.udp_audio_port);
+    LOG_INFO("Server started: %s (TCP:%d, UDP Audio:%d, Discovery:%d)", 
+             name, tcp_port, g_server.udp_audio_port, g_server.discovery_port);
     
     if (g_server.callbacks.onStarted) {
         g_server.callbacks.onStarted(g_server.callbacks.userdata);
