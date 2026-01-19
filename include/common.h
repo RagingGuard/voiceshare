@@ -57,11 +57,11 @@
 #define OPUS_COMPLEXITY     5           // Opus 复杂度 (0-10)
 #define OPUS_MAX_PACKET     512         // Opus 最大包大小
 
-// Jitter Buffer 常量
-#define JITTER_BUFFER_MS    80          // 抖动缓冲时长 (毫秒)
-#define JITTER_MIN_MS       40          // 最小缓冲
-#define JITTER_MAX_MS       200         // 最大缓冲
-#define JITTER_BUFFER_SLOTS 64          // 缓冲槽数量
+// Jitter Buffer 常量 - 低延迟配置
+#define JITTER_BUFFER_MS    20          // 抖动缓冲时长 (毫秒) - 最低延迟
+#define JITTER_MIN_MS       10          // 最小缓冲
+#define JITTER_MAX_MS       60          // 最大缓冲
+#define JITTER_BUFFER_SLOTS 16          // 缓冲槽数量 - 减少以降低延迟
 
 //=============================================================================
 // 限制常量

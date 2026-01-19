@@ -13,6 +13,7 @@
 #include "opus_codec.h"
 #include "jitter_buffer.h"
 #include "audio.h"
+#include "gui.h"
 
 //=============================================================================
 // 客户端状态
@@ -199,6 +200,12 @@ bool Client_Connect(const char* ip, uint16_t tcp_port, uint16_t audio_udp_port) 
     if (!g_client.initialized || g_client.connected) return false;
     
     LOG_INFO("Connecting to %s (TCP:%d, UDP:%d)", ip, tcp_port, audio_udp_port);
+    
+    // 快速验证服务器是否可达 (2秒超时)
+    if (!Network_TcpQuickTest(ip, tcp_port, 2000)) {
+        LOG_ERROR("Server not reachable: %s:%d", ip, tcp_port);
+        return false;
+    }
     
     // TCP 控制连接
     g_client.tcp_control = Network_TcpConnect(ip, tcp_port);
@@ -408,9 +415,47 @@ void Client_SendOpusAudio(const uint8_t* opus_data, int opus_len, uint32_t times
 
 int Client_GetPeers(PeerInfo* peers, int max_count) {
     int count = 0;
+    
+    // 如果已连接，首先添加服务器
+    if (g_client.connected && count < max_count) {
+        peers[count].client_id = g_client.current_server.server_id;
+        peers[count].ssrc = 0;  // 服务器 SSRC
+        strncpy(peers[count].name, g_client.current_server.name, MAX_NAME_LEN);  // 直接使用服务器名称
+        strncpy(peers[count].ip, g_client.server_ip, 15);
+        peers[count].ip[15] = '\0';
+        peers[count].udp_port = g_client.server_udp_port;
+        peers[count].is_talking = false;
+        peers[count].is_muted = false;
+        peers[count].audio_active = true;
+        peers[count].peer_type = PEER_TYPE_SERVER;  // 服务器类型
+        count++;
+    }
+    
+    // 然后添加本客户端自己
+    if (g_client.connected && count < max_count) {
+        peers[count].client_id = g_client.client_id;
+        peers[count].ssrc = g_client.ssrc;
+        strncpy(peers[count].name, g_client.name, MAX_NAME_LEN);  // 直接使用客户端名称
+        strncpy(peers[count].ip, "本机", 15);
+        peers[count].ip[15] = '\0';
+        peers[count].udp_port = g_client.local_udp_port;
+        peers[count].is_talking = false;
+        peers[count].is_muted = false;
+        peers[count].audio_active = g_client.in_session;
+        peers[count].peer_type = PEER_TYPE_SELF;  // 本机类型
+        count++;
+    }
+    
+    // 最后添加其他 peer
     MutexLock(&g_client.peers_mutex);
     for (int i = 0; i < g_client.peer_count && count < max_count; i++) {
-        peers[count++] = g_client.peers[i];
+        // 跳过自己（已经添加了）
+        if (g_client.peers[i].client_id == g_client.client_id) continue;
+        // 跳过服务器（已经添加了）
+        if (g_client.peers[i].client_id == g_client.current_server.server_id) continue;
+        peers[count] = g_client.peers[i];
+        peers[count].peer_type = PEER_TYPE_CLIENT;  // 其他客户端类型
+        count++;
     }
     MutexUnlock(&g_client.peers_mutex);
     return count;
@@ -451,6 +496,11 @@ static DWORD WINAPI DiscoveryThreadProc(LPVOID param) {
         
         // 定期发送广播（使用配置的发现端口）
         if (now - last_broadcast >= DISCOVERY_INTERVAL) {
+            // 每次广播前清空服务器列表，重新发现
+            MutexLock(&g_client.servers_mutex);
+            g_client.server_count = 0;
+            MutexUnlock(&g_client.servers_mutex);
+            
             DiscoveryRequest req;
             PacketHeader_Init(&req.header, MSG_DISCOVERY_REQUEST, 
                               sizeof(DiscoveryRequest) - sizeof(PacketHeader));
@@ -618,12 +668,15 @@ static DWORD WINAPI PlaybackThreadProc(LPVOID param) {
     
     int16_t pcm[AUDIO_FRAME_SAMPLES];
     uint32_t cleanup_timer = 0;
+    uint32_t playback_frame_count = 0;
     
     while (g_client.in_session) {
         // 从多流 Jitter Buffer 获取混音后的音频
         int samples = MultiStreamJB_GetMixed(g_client.multi_jitter_buffer, pcm, AUDIO_FRAME_SAMPLES);
         
         if (samples > 0) {
+            playback_frame_count++;
+            
             // 回调
             if (g_client.callbacks.onAudioReceived) {
                 g_client.callbacks.onAudioReceived(pcm, samples, g_client.callbacks.userdata);

@@ -6,6 +6,7 @@
  * - UDP 发现线程: 响应局域网发现请求
  * - TCP 控制线程: 会话管理、心跳、音频控制
  * - UDP 音频线程: 接收/转发 RTP 音频包
+ * - 播放线程: 从 JitterBuffer 取数据播放 (服务器也作为参与者)
  * - 音频处理: 简单噪声检测，对高能量非人声进行衰减
  */
 
@@ -14,6 +15,8 @@
 #include "opus_codec.h"
 #include "jitter_buffer.h"
 #include "audio_dsp.h"
+#include "audio.h"
+#include "gui.h"
 
 //=============================================================================
 // 客户端会话 (TCP 控制)
@@ -60,6 +63,7 @@ typedef struct {
     Thread          tcp_accept_thread;
     Thread          tcp_recv_thread;
     Thread          udp_audio_thread;
+    Thread          playback_thread;    // 播放线程 (服务器作为参与者)
     Event           stop_event;
     
     // 客户端管理
@@ -74,8 +78,11 @@ typedef struct {
     // 回调
     ServerCallbacks callbacks;
     
-    // Opus 解码器 (用于接收音频)
+    // Opus 解码器 (用于噪声检测)
     OpusCodec*      opus_decoder;
+    
+    // 多流 Jitter Buffer (服务器播放接收到的音频)
+    MultiStreamJitterBuffer* multi_jitter_buffer;
 } ServerState;
 
 static ServerState g_server = {0};
@@ -87,6 +94,7 @@ static DWORD WINAPI DiscoveryThreadProc(LPVOID param);
 static DWORD WINAPI TcpAcceptThreadProc(LPVOID param);
 static DWORD WINAPI TcpRecvThreadProc(LPVOID param);
 static DWORD WINAPI UdpAudioThreadProc(LPVOID param);
+static DWORD WINAPI PlaybackThreadProc(LPVOID param);
 static void HandleTcpPacket(ClientSession* client, const uint8_t* data, int len);
 static void BroadcastTcpMessage(const void* data, int len, uint32_t exclude_id);
 static void BroadcastUdpAudio(const RtpHeader* rtp, const uint8_t* payload, 
@@ -160,10 +168,28 @@ bool Server_Start(const char* name, uint16_t tcp_port, uint16_t udp_port,
         return false;
     }
     
-    // 创建 Opus 解码器
+    // 创建 Opus 解码器 (用于噪声检测)
     OpusDecoderConfig dec_config;
     OpusCodec_GetDefaultDecoderConfig(&dec_config);
     g_server.opus_decoder = OpusCodec_Create(NULL, &dec_config);
+    
+    // 创建多流 Jitter Buffer (服务器作为参与者接收音频)
+    JitterConfig jb_config = {
+        .min_delay_ms = 20,
+        .max_delay_ms = 80,
+        .target_delay_ms = 40,
+        .adaptive = true
+    };
+    g_server.multi_jitter_buffer = MultiStreamJB_Create(MAX_CLIENTS, &jb_config);
+    
+    // 配置解码器工厂 (为每个流创建独立的解码器)
+    if (g_server.multi_jitter_buffer) {
+        MultiStreamJB_SetDecoderFactory(g_server.multi_jitter_buffer,
+                                         OpusCodec_CreateDecoder,
+                                         OpusCodec_DestroyDecoder,
+                                         OpusCodec_JitterDecode,
+                                         OpusCodec_JitterPlc);
+    }
     
     // 创建停止事件
     g_server.stop_event = EventCreate();
@@ -177,6 +203,7 @@ bool Server_Start(const char* name, uint16_t tcp_port, uint16_t udp_port,
     ThreadCreate(&g_server.tcp_accept_thread, TcpAcceptThreadProc, NULL);
     ThreadCreate(&g_server.tcp_recv_thread, TcpRecvThreadProc, NULL);
     ThreadCreate(&g_server.udp_audio_thread, UdpAudioThreadProc, NULL);
+    ThreadCreate(&g_server.playback_thread, PlaybackThreadProc, NULL);
     
     LOG_INFO("Server started: %s (TCP:%d, UDP Audio:%d, Discovery:%d)", 
              name, tcp_port, g_server.udp_audio_port, g_server.discovery_port);
@@ -215,11 +242,13 @@ void Server_Stop(void) {
     ThreadJoin(g_server.tcp_accept_thread);
     ThreadJoin(g_server.tcp_recv_thread);
     ThreadJoin(g_server.udp_audio_thread);
+    ThreadJoin(g_server.playback_thread);
     
     ThreadClose(g_server.discovery_thread);
     ThreadClose(g_server.tcp_accept_thread);
     ThreadClose(g_server.tcp_recv_thread);
     ThreadClose(g_server.udp_audio_thread);
+    ThreadClose(g_server.playback_thread);
     
     EventDestroy(g_server.stop_event);
     
@@ -227,6 +256,12 @@ void Server_Stop(void) {
     if (g_server.opus_decoder) {
         OpusCodec_Destroy(g_server.opus_decoder);
         g_server.opus_decoder = NULL;
+    }
+    
+    // 销毁多流 Jitter Buffer
+    if (g_server.multi_jitter_buffer) {
+        MultiStreamJB_Destroy(g_server.multi_jitter_buffer);
+        g_server.multi_jitter_buffer = NULL;
     }
     
     g_server.udp_discovery = INVALID_SOCKET;
@@ -262,6 +297,23 @@ int Server_GetClientCount(void) {
 
 int Server_GetClients(PeerInfo* peers, int max_count) {
     int count = 0;
+    
+    // 首先添加服务器自己
+    if (max_count > 0) {
+        peers[count].client_id = g_server.server_id;
+        peers[count].ssrc = g_server.ssrc;
+        strncpy(peers[count].name, g_server.name, MAX_NAME_LEN);  // 直接使用服务器名称
+        strncpy(peers[count].ip, "本机", 15);
+        peers[count].ip[15] = '\0';
+        peers[count].udp_port = g_server.udp_audio_port;
+        peers[count].is_talking = false;
+        peers[count].is_muted = false;
+        peers[count].audio_active = true;
+        peers[count].peer_type = PEER_TYPE_SERVER;  // 服务器类型
+        count++;
+    }
+    
+    // 然后添加连接的客户端
     MutexLock(&g_server.clients_mutex);
     for (int i = 0; i < MAX_CLIENTS && count < max_count; i++) {
         if (g_server.clients[i].active) {
@@ -276,6 +328,7 @@ int Server_GetClients(PeerInfo* peers, int max_count) {
             peers[count].is_talking = g_server.clients[i].is_talking;
             peers[count].is_muted = g_server.clients[i].is_muted;
             peers[count].audio_active = g_server.clients[i].audio_active;
+            peers[count].peer_type = PEER_TYPE_CLIENT;  // 客户端类型
             count++;
         }
     }
@@ -579,11 +632,53 @@ static DWORD WINAPI UdpAudioThreadProc(LPVOID param) {
             }
         }
         
+        // 将音频放入服务器的 JitterBuffer (服务器作为参与者播放音频)
+        if (g_server.multi_jitter_buffer && payload_len > 0) {
+            MultiStreamJB_Put(g_server.multi_jitter_buffer, &rtp, payload, payload_len);
+        }
+        
         // 转发给其他客户端 (使用原始或处理后的包)
         BroadcastUdpAudio(&rtp, payload, payload_len, rtp.ssrc);
     }
     
     LOG_DEBUG("UDP audio thread stopped");
+    return 0;
+}
+
+static DWORD WINAPI PlaybackThreadProc(LPVOID param) {
+    LOG_DEBUG("Server playback thread started");
+    
+    int16_t pcm[AUDIO_FRAME_SAMPLES];
+    uint32_t cleanup_timer = 0;
+    uint32_t playback_frame_count = 0;
+    
+    while (g_server.running) {
+        // 从多流 Jitter Buffer 获取混音后的音频
+        if (g_server.multi_jitter_buffer) {
+            int samples = MultiStreamJB_GetMixed(g_server.multi_jitter_buffer, pcm, AUDIO_FRAME_SAMPLES);
+            
+            if (samples > 0) {
+                playback_frame_count++;
+                
+                // 提交到音频播放
+                Audio_SubmitPlaybackData(pcm, samples);
+            } else {
+                // 等待数据
+                Sleep(5);
+            }
+            
+            // 定期清理不活跃的流 (每 5 秒检查一次，清理超过 10 秒无数据的流)
+            cleanup_timer++;
+            if (cleanup_timer >= 1000) {  // 约 5 秒 (5ms * 1000)
+                cleanup_timer = 0;
+                MultiStreamJB_CleanupInactive(g_server.multi_jitter_buffer, 10000);
+            }
+        } else {
+            Sleep(10);
+        }
+    }
+    
+    LOG_DEBUG("Server playback thread stopped");
     return 0;
 }
 

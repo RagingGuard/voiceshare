@@ -159,12 +159,56 @@ SOCKET Network_TcpConnect(const char* ip, uint16_t port) {
     return sock;
 }
 
+bool Network_TcpQuickTest(const char* ip, uint16_t port, int timeout_ms) {
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        return false;
+    }
+    
+    // 设置为非阻塞模式
+    u_long mode = 1;
+    ioctlsocket(sock, FIONBIO, &mode);
+    
+    SOCKADDR_IN addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(ip);
+    addr.sin_port = htons(port);
+    
+    // 开始连接（非阻塞，会立即返回）
+    connect(sock, (SOCKADDR*)&addr, sizeof(addr));
+    
+    // 使用 select 等待连接完成
+    fd_set write_fds, except_fds;
+    FD_ZERO(&write_fds);
+    FD_ZERO(&except_fds);
+    FD_SET(sock, &write_fds);
+    FD_SET(sock, &except_fds);
+    
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    
+    int ret = select((int)sock + 1, NULL, &write_fds, &except_fds, &tv);
+    
+    bool success = false;
+    if (ret > 0 && FD_ISSET(sock, &write_fds)) {
+        // 检查是否真的连接成功
+        int error = 0;
+        int len = sizeof(error);
+        getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len);
+        success = (error == 0);
+    }
+    
+    closesocket(sock);
+    return success;
+}
+
 int Network_UdpBroadcast(SOCKET sock, const void* data, int len, uint16_t port) {
     SOCKADDR_IN addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_BROADCAST;
     addr.sin_port = htons(port);
-    
+
     return sendto(sock, (const char*)data, len, 0, (SOCKADDR*)&addr, sizeof(addr));
 }
 
@@ -189,7 +233,6 @@ int Network_TcpSend(SOCKET sock, const void* data, int len) {
         }
         sent += n;
     }
-    
     return sent;
 }
 
@@ -205,7 +248,6 @@ int Network_TcpRecv(SOCKET sock, void* buf, int len) {
         }
         received += n;
     }
-    
     return received;
 }
 

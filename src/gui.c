@@ -1,10 +1,15 @@
-﻿/* gui.c - Win32 GUI with Server/Client Tab interface */
+/* gui.c - Win32 GUI with Server/Client Tab interface */
 #include "gui.h"
 #include "network.h"
-#include "../res/resource.h"
+#include "protocol.h"
+#include "resource_ids.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <uxtheme.h>
+
+#ifndef WM_TRAYICON
+#define WM_TRAYICON (WM_USER + 1)
+#endif
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "uxtheme.lib")
@@ -27,13 +32,14 @@ static struct {
     HWND hSrvGroupConfig, hSrvGroupUsers;
     HWND hSrvLblName, hSrvLblTcpPort, hSrvLblUdpPort, hSrvLblDiscPort;
     // 客户端页面控件
-    HWND hCliServers, hCliRefresh, hCliConnect, hCliDisconnect, hCliPeers, hCliStatus;
+    HWND hCliServers, hCliRefresh, hCliDisconnect, hCliPeers, hCliStatus;
     HWND hCliGroupServers, hCliGroupUsers;
-    // 客户端手动连接控件
+    // 客户端连接配置控件
     HWND hCliGroupManual;
     HWND hCliManualIp, hCliManualTcpPort, hCliManualUdpPort, hCliManualDiscPort;
     HWND hCliManualConnect;
     HWND hCliLblIp, hCliLblTcpPort, hCliLblUdpPort, hCliLblDiscPort;
+    HWND hCliUsername, hCliLblUsername;
     // 公共控件
     HWND hMuteBtn, hInputSlider, hOutputSlider, hInputLevel, hOutputLevel, hStatus;
     HWND hHeaderLabel, hAudioGroup;
@@ -42,7 +48,7 @@ static struct {
     int currentTab;
     BOOL serverRunning, clientConnected;
     GuiCallbacks callbacks;
-    HFONT hTitleFont, hNormalFont, hBoldFont;
+    HFONT hTitleFont, hNormalFont, hBoldFont, hMonoFont;
     HBRUSH hHeaderBrush, hAccentBrush;
 } g = {0};
 
@@ -59,8 +65,8 @@ bool Gui_Init(HINSTANCE hInstance, const GuiCallbacks* cb) {
     if (cb) g.callbacks = *cb;
 
     WNDCLASSEXW wc = {sizeof(wc), CS_HREDRAW|CS_VREDRAW, WndProc, 0, 0, hInstance,
-        LoadIcon(NULL,IDI_APPLICATION), LoadCursor(NULL,IDC_ARROW),
-        (HBRUSH)(COLOR_WINDOW+1), NULL, WND_CLASS, LoadIcon(NULL,IDI_APPLICATION)};
+        LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP)), LoadCursor(NULL,IDC_ARROW),
+        (HBRUSH)(COLOR_WINDOW+1), NULL, WND_CLASS, LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP))};
     if (!RegisterClassExW(&wc)) return false;
 
     INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TAB_CLASSES|ICC_BAR_CLASSES|ICC_LISTVIEW_CLASSES|ICC_PROGRESS_CLASS};
@@ -72,8 +78,8 @@ bool Gui_Init(HINSTANCE hInstance, const GuiCallbacks* cb) {
     g.hAccentBrush = CreateSolidBrush(COLOR_ACCENT);
 
     g.hMain = CreateWindowExW(0, WND_CLASS, L"SharedVoice - 局域网语音通话 v1.0", 
-        WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 580, 540, NULL, NULL, hInstance, NULL);
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 590, 580, NULL, NULL, hInstance, NULL);
     if (!g.hMain) return false;
 
     RECT rc; GetClientRect(g.hMain, &rc);
@@ -97,11 +103,12 @@ bool Gui_Init(HINSTANCE hInstance, const GuiCallbacks* cb) {
     CreateServerControls();
     CreateClientControls();
     CreateCommonControls();
-    SwitchTab(0);
+    TabCtrl_SetCurSel(g.hTab, 1); // 默认选中客户端模式页签
+    SwitchTab(1); // 默认进入客户端模式
 
     // 状态栏 - 分区显示
     int parts[] = {220, 380, -1};
-    g.hStatus = CreateWindowExW(0, STATUSCLASSNAMEW, NULL, WS_CHILD|WS_VISIBLE|SBARS_SIZEGRIP,
+    g.hStatus = CreateWindowExW(0, STATUSCLASSNAMEW, NULL, WS_CHILD|WS_VISIBLE,
         0, 0, 0, 0, g.hMain, (HMENU)IDC_STATUS, hInstance, NULL);
     SendMessage(g.hStatus, SB_SETPARTS, 3, (LPARAM)parts);
     SendMessage(g.hStatus, SB_SETTEXTW, 0, (LPARAM)L"就绪");
@@ -109,6 +116,22 @@ bool Gui_Init(HINSTANCE hInstance, const GuiCallbacks* cb) {
     SendMessage(g.hStatus, SB_SETTEXTW, 2, (LPARAM)L"v1.0");
 
     SetTimer(g.hMain, IDT_UPDATE, 100, NULL);
+    
+    // 创建托盘图标
+    ZeroMemory(&g.nid, sizeof(g.nid));
+    g.nid.cbSize = sizeof(NOTIFYICONDATAW);
+    g.nid.hWnd = g.hMain;
+    g.nid.uID = 1;
+    g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g.nid.uCallbackMessage = WM_TRAYICON;
+    // load the embedded application icon (fallback to system icon if resource missing)
+    HICON hAppIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                      0, 0, LR_DEFAULTSIZE);
+    if (!hAppIcon) hAppIcon = LoadIconW(NULL, MAKEINTRESOURCEW(IDI_APPLICATION));
+    g.nid.hIcon = hAppIcon;
+    wcscpy(g.nid.szTip, L"SharedVoice - 局域网语音通话");
+    Shell_NotifyIconW(NIM_ADD, &g.nid);
+    
     ShowWindow(g.hMain, SW_SHOW);
     UpdateWindow(g.hMain);
     return true;
@@ -130,6 +153,12 @@ static void CreateFonts(void) {
     // 粗体字体
     lf.lfWeight = FW_SEMIBOLD;
     g.hBoldFont = CreateFontIndirectW(&lf);
+    
+    // 等宽字体 (用于日志)
+    lf.lfHeight = -12;
+    lf.lfWeight = FW_NORMAL;
+    wcscpy(lf.lfFaceName, L"Consolas");
+    g.hMonoFont = CreateFontIndirectW(&lf);
 }
 
 static void CreateServerControls(void) {
@@ -208,14 +237,16 @@ static void CreateServerControls(void) {
         g.hMain, (HMENU)IDC_PEER_LIST, g.hInstance, NULL);
     SendMessage(g.hSrvClients, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
-    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 140, L"用户名", 0, 0, 0, 0};
+    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 120, L"用户名", 0, 0, 0, 0};
     ListView_InsertColumn(g.hSrvClients, 0, &col);
-    col.cx = 130; col.pszText = L"IP地址";
+    col.cx = 60; col.pszText = L"类型";
     ListView_InsertColumn(g.hSrvClients, 1, &col);
-    col.cx = 80; col.pszText = L"UDP端口";
+    col.cx = 110; col.pszText = L"IP地址";
     ListView_InsertColumn(g.hSrvClients, 2, &col);
-    col.cx = 80; col.pszText = L"状态";
+    col.cx = 70; col.pszText = L"UDP端口";
     ListView_InsertColumn(g.hSrvClients, 3, &col);
+    col.cx = 70; col.pszText = L"状态";
+    ListView_InsertColumn(g.hSrvClients, 4, &col);
     ListView_SetExtendedListViewStyle(g.hSrvClients, LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);
 }
 
@@ -223,122 +254,131 @@ static void CreateClientControls(void) {
     int baseY = 75;
     int y = baseY;
 
-    // 手动连接区域（放在最上面）
-    g.hCliGroupManual = CreateWindowExW(0, L"BUTTON", L" 手动连接 ", WS_CHILD|BS_GROUPBOX,
-        20, y, 535, 55, g.hMain, NULL, g.hInstance, NULL);
+    // 连接配置区域（合并我的信息和手动连接）
+    g.hCliGroupManual = CreateWindowExW(0, L"BUTTON", L" 连接配置 ", WS_CHILD|BS_GROUPBOX,
+        20, y, 535, 75, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliGroupManual, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-    y += 18;
+    y += 20;
 
-    // IP地址
-    g.hCliLblIp = CreateWindowExW(0, L"STATIC", L"IP:", WS_CHILD,
-        30, y+3, 20, 20, g.hMain, NULL, g.hInstance, NULL);
-    SendMessage(g.hCliLblIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    // 第一行：昵称
+    g.hCliLblUsername = CreateWindowExW(0, L"STATIC", L"昵称:", WS_CHILD,
+        30, y+3, 35, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblUsername, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
     
-    g.hCliManualIp = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"192.168.1.100",
-        WS_CHILD|ES_AUTOHSCROLL, 52, y, 100, 22,
-        g.hMain, (HMENU)IDC_MANUAL_IP, g.hInstance, NULL);
-    SendMessage(g.hCliManualIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    g.hCliUsername = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"User",
+        WS_CHILD|ES_AUTOHSCROLL, 70, y, 120, 22,
+        g.hMain, (HMENU)IDC_CLIENT_USERNAME, g.hInstance, NULL);
+    SendMessage(g.hCliUsername, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    SendMessage(g.hCliUsername, EM_SETLIMITTEXT, 31, 0);
 
-    // TCP端口
-    g.hCliLblTcpPort = CreateWindowExW(0, L"STATIC", L"TCP:", WS_CHILD,
-        160, y+3, 28, 20, g.hMain, NULL, g.hInstance, NULL);
-    SendMessage(g.hCliLblTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
-    
-    g.hCliManualTcpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"5000",
-        WS_CHILD|ES_NUMBER, 190, y, 50, 22,
-        g.hMain, (HMENU)IDC_MANUAL_TCP, g.hInstance, NULL);
-    SendMessage(g.hCliManualTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
-
-    // UDP端口
-    g.hCliLblUdpPort = CreateWindowExW(0, L"STATIC", L"UDP:", WS_CHILD,
-        248, y+3, 30, 20, g.hMain, NULL, g.hInstance, NULL);
-    SendMessage(g.hCliLblUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
-    
-    g.hCliManualUdpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"6000",
-        WS_CHILD|ES_NUMBER, 280, y, 50, 22,
-        g.hMain, (HMENU)IDC_MANUAL_UDP, g.hInstance, NULL);
-    SendMessage(g.hCliManualUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
-
-    // 发现端口
-    g.hCliLblDiscPort = CreateWindowExW(0, L"STATIC", L"发现:", WS_CHILD,
-        338, y+3, 35, 20, g.hMain, NULL, g.hInstance, NULL);
+    // 发现端口（放在昵称同一行）
+    g.hCliLblDiscPort = CreateWindowExW(0, L"STATIC", L"发现端口:", WS_CHILD,
+        200, y+3, 60, 20, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliLblDiscPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
     
     g.hCliManualDiscPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"37020",
-        WS_CHILD|ES_NUMBER, 375, y, 50, 22,
+        WS_CHILD|ES_NUMBER, 265, y, 55, 22,
         g.hMain, (HMENU)IDC_MANUAL_DISC, g.hInstance, NULL);
     SendMessage(g.hCliManualDiscPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
-    // 手动连接按钮
+    // 刷新按钮
+    g.hCliRefresh = CreateWindowExW(0, L"BUTTON", L"扫描服务器", WS_CHILD|BS_PUSHBUTTON,
+        330, y, 90, 24, g.hMain, (HMENU)IDC_BTN_REFRESH, g.hInstance, NULL);
+    SendMessage(g.hCliRefresh, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
+
+    // 状态显示
+    g.hCliStatus = CreateWindowExW(0, L"STATIC", L"未连接", WS_CHILD|SS_LEFT,
+        430, y+3, 115, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliStatus, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
+    y += 26;
+
+    // 第二行：IP、TCP、UDP、连接、断开
+    g.hCliLblIp = CreateWindowExW(0, L"STATIC", L"IP:", WS_CHILD,
+        30, y+3, 18, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualIp = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD|ES_AUTOHSCROLL, 50, y, 110, 22,
+        g.hMain, (HMENU)IDC_MANUAL_IP, g.hInstance, NULL);
+    SendMessage(g.hCliManualIp, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    g.hCliLblTcpPort = CreateWindowExW(0, L"STATIC", L"TCP:", WS_CHILD,
+        168, y+3, 28, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualTcpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"5000",
+        WS_CHILD|ES_NUMBER, 198, y, 50, 22,
+        g.hMain, (HMENU)IDC_MANUAL_TCP, g.hInstance, NULL);
+    SendMessage(g.hCliManualTcpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    g.hCliLblUdpPort = CreateWindowExW(0, L"STATIC", L"UDP:", WS_CHILD,
+        256, y+3, 30, 20, g.hMain, NULL, g.hInstance, NULL);
+    SendMessage(g.hCliLblUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+    
+    g.hCliManualUdpPort = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"6000",
+        WS_CHILD|ES_NUMBER, 288, y, 50, 22,
+        g.hMain, (HMENU)IDC_MANUAL_UDP, g.hInstance, NULL);
+    SendMessage(g.hCliManualUdpPort, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
+
+    // 连接按钮
     g.hCliManualConnect = CreateWindowExW(0, L"BUTTON", L"连接", WS_CHILD|BS_PUSHBUTTON,
-        435, y-1, 70, 24, g.hMain, (HMENU)IDC_BTN_MANUAL_CONN, g.hInstance, NULL);
+        350, y, 70, 24, g.hMain, (HMENU)IDC_BTN_MANUAL_CONN, g.hInstance, NULL);
     SendMessage(g.hCliManualConnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-    y += 35;
+
+    // 断开按钮（紧挨着连接按钮）
+    g.hCliDisconnect = CreateWindowExW(0, L"BUTTON", L"断开", WS_CHILD|WS_DISABLED|BS_PUSHBUTTON,
+        425, y, 70, 24, g.hMain, (HMENU)IDC_BTN_DISCONNECT, g.hInstance, NULL);
+    SendMessage(g.hCliDisconnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
+    y += 30;
 
     // 服务器列表区域（自动发现）
     g.hCliGroupServers = CreateWindowExW(0, L"BUTTON", L" 自动发现的服务器 ", WS_CHILD|BS_GROUPBOX,
-        20, y, 535, 95, g.hMain, NULL, g.hInstance, NULL);
+        20, y, 535, 120, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliGroupServers, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
     y += 18;
 
     g.hCliServers = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, NULL,
-        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 48,
+        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 90,
         g.hMain, (HMENU)IDC_SERVER_LIST, g.hInstance, NULL);
     SendMessage(g.hCliServers, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
-    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 140, L"服务器名称", 0, 0, 0, 0};
+    LVCOLUMNW col = {LVCF_TEXT|LVCF_WIDTH, 0, 150, L"服务器名称", 0, 0, 0, 0};
     ListView_InsertColumn(g.hCliServers, 0, &col);
-    col.cx = 95; col.pszText = L"IP地址";
+    col.cx = 110; col.pszText = L"IP地址";
     ListView_InsertColumn(g.hCliServers, 1, &col);
-    col.cx = 60; col.pszText = L"TCP";
+    col.cx = 70; col.pszText = L"TCP";
     ListView_InsertColumn(g.hCliServers, 2, &col);
-    col.cx = 60; col.pszText = L"UDP";
+    col.cx = 70; col.pszText = L"UDP";
     ListView_InsertColumn(g.hCliServers, 3, &col);
-    col.cx = 50; col.pszText = L"在线";
+    col.cx = 60; col.pszText = L"在线";
     ListView_InsertColumn(g.hCliServers, 4, &col);
     ListView_SetExtendedListViewStyle(g.hCliServers, LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);
-    y += 53;
-
-    // 按钮行
-    g.hCliRefresh = CreateWindowExW(0, L"BUTTON", L"刷新", WS_CHILD|BS_PUSHBUTTON,
-        30, y, 70, 24, g.hMain, (HMENU)IDC_BTN_REFRESH, g.hInstance, NULL);
-    SendMessage(g.hCliRefresh, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-
-    g.hCliConnect = CreateWindowExW(0, L"BUTTON", L"连接选中", WS_CHILD|BS_PUSHBUTTON,
-        108, y, 80, 24, g.hMain, (HMENU)IDC_BTN_CONNECT, g.hInstance, NULL);
-    SendMessage(g.hCliConnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-
-    g.hCliDisconnect = CreateWindowExW(0, L"BUTTON", L"断开", WS_CHILD|WS_DISABLED|BS_PUSHBUTTON,
-        196, y, 70, 24, g.hMain, (HMENU)IDC_BTN_DISCONNECT, g.hInstance, NULL);
-    SendMessage(g.hCliDisconnect, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-
-    g.hCliStatus = CreateWindowExW(0, L"STATIC", L"状态: 未连接", WS_CHILD|SS_LEFT,
-        280, y+4, 260, 20, g.hMain, NULL, g.hInstance, NULL);
-    SendMessage(g.hCliStatus, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
-    y += 30;
+    y += 99;
 
     // 在线用户区域
     g.hCliGroupUsers = CreateWindowExW(0, L"BUTTON", L" 在线用户 ", WS_CHILD|BS_GROUPBOX,
-        20, y, 535, 82, g.hMain, NULL, g.hInstance, NULL);
+        20, y, 535, 110, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliGroupUsers, WM_SETFONT, (WPARAM)g.hBoldFont, TRUE);
     y += 18;
 
     g.hCliPeers = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, NULL,
-        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 54,
+        WS_CHILD|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 30, y, 515, 80,
         g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hCliPeers, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
-    col.cx = 200; col.pszText = L"用户名";
+    col.cx = 150; col.pszText = L"用户名";
     ListView_InsertColumn(g.hCliPeers, 0, &col);
-    col.cx = 100; col.pszText = L"状态";
+    col.cx = 60; col.pszText = L"类型";
     ListView_InsertColumn(g.hCliPeers, 1, &col);
-    col.cx = 100; col.pszText = L"SSRC";
+    col.cx = 80; col.pszText = L"状态";
     ListView_InsertColumn(g.hCliPeers, 2, &col);
+    col.cx = 80; col.pszText = L"SSRC";
+    ListView_InsertColumn(g.hCliPeers, 3, &col);
     ListView_SetExtendedListViewStyle(g.hCliPeers, LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);
 }
 
 static void CreateCommonControls(void) {
-    int y = 350;
+    int y = 400;
 
     // 分隔线
     CreateWindowExW(0, L"STATIC", NULL, WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
@@ -367,7 +407,7 @@ static void CreateCommonControls(void) {
     SendMessage(g.hInputSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
     SendMessage(g.hInputSlider, TBM_SETPOS, TRUE, 80);
 
-    g.hLblInLevel = CreateWindowExW(0, L"STATIC", L"电平:", WS_CHILD|WS_VISIBLE,
+    g.hLblInLevel = CreateWindowExW(0, L"STATIC", L"信号:", WS_CHILD|WS_VISIBLE,
         265, y+3, 40, 20, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hLblInLevel, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
@@ -387,7 +427,7 @@ static void CreateCommonControls(void) {
     SendMessage(g.hOutputSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
     SendMessage(g.hOutputSlider, TBM_SETPOS, TRUE, 80);
 
-    g.hLblOutLevel = CreateWindowExW(0, L"STATIC", L"电平:", WS_CHILD|WS_VISIBLE,
+    g.hLblOutLevel = CreateWindowExW(0, L"STATIC", L"信号:", WS_CHILD|WS_VISIBLE,
         265, y+3, 40, 20, g.hMain, NULL, g.hInstance, NULL);
     SendMessage(g.hLblOutLevel, WM_SETFONT, (WPARAM)g.hNormalFont, TRUE);
 
@@ -423,11 +463,10 @@ static void SwitchTab(int tab) {
     ShowWindow(g.hCliGroupUsers, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliServers, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliRefresh, showClient ? SW_SHOW : SW_HIDE);
-    ShowWindow(g.hCliConnect, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliDisconnect, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliPeers, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliStatus, showClient ? SW_SHOW : SW_HIDE);
-    // 手动连接控件
+    // 连接配置控件
     ShowWindow(g.hCliGroupManual, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliManualIp, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliManualTcpPort, showClient ? SW_SHOW : SW_HIDE);
@@ -438,6 +477,8 @@ static void SwitchTab(int tab) {
     ShowWindow(g.hCliLblTcpPort, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliLblUdpPort, showClient ? SW_SHOW : SW_HIDE);
     ShowWindow(g.hCliLblDiscPort, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliUsername, showClient ? SW_SHOW : SW_HIDE);
+    ShowWindow(g.hCliLblUsername, showClient ? SW_SHOW : SW_HIDE);
 }
 
 static void UpdateUI(void) {
@@ -456,17 +497,18 @@ static void UpdateUI(void) {
 
     EnableWindow(g.hCliServers, !g.clientConnected);
     EnableWindow(g.hCliRefresh, !g.clientConnected);
-    EnableWindow(g.hCliConnect, !g.clientConnected);
     EnableWindow(g.hCliDisconnect, g.clientConnected);
-    // 手动连接控件
+    // 连接配置控件
     EnableWindow(g.hCliManualIp, !g.clientConnected);
     EnableWindow(g.hCliManualTcpPort, !g.clientConnected);
     EnableWindow(g.hCliManualUdpPort, !g.clientConnected);
     EnableWindow(g.hCliManualDiscPort, !g.clientConnected);
     EnableWindow(g.hCliManualConnect, !g.clientConnected);
+    // 用户名控件 (连接后禁用)
+    EnableWindow(g.hCliUsername, !g.clientConnected);
     
     if (!g.clientConnected) {
-        SetWindowTextW(g.hCliStatus, L"状态: 未连接");
+        SetWindowTextW(g.hCliStatus, L"未连接");
     }
 }
 
@@ -511,29 +553,7 @@ static void OnClientRefresh(void) {
     if (g.callbacks.onRefreshServers) g.callbacks.onRefreshServers((uint16_t)discP, g.callbacks.userdata);
 }
 
-static void OnClientConnect(void) {
-    int sel = ListView_GetNextItem(g.hCliServers, -1, LVNI_SELECTED);
-    if (sel < 0) {
-        MessageBoxW(g.hMain, L"请先选择一个服务器，或使用手动连接", L"连接", MB_OK|MB_ICONINFORMATION);
-        return;
-    }
-    wchar_t ip[64], tcpPortW[16], udpPortW[16];
-    ListView_GetItemText(g.hCliServers, sel, 1, ip, 64);
-    ListView_GetItemText(g.hCliServers, sel, 2, tcpPortW, 16);
-    ListView_GetItemText(g.hCliServers, sel, 3, udpPortW, 16);
-    
-    char ipA[64];
-    WideCharToMultiByte(CP_UTF8, 0, ip, -1, ipA, 64, NULL, NULL);
-    int tcpPort = _wtoi(tcpPortW);
-    int udpPort = _wtoi(udpPortW);
-    if (tcpPort <= 0) tcpPort = 5000;
-    if (udpPort <= 0) udpPort = 6000;
-    
-    LOG_INFO("GUI: OnClientConnect called - ip=%s, tcp_port=%d, udp_port=%d", ipA, tcpPort, udpPort);
-    if (g.callbacks.onConnect) g.callbacks.onConnect(ipA, (uint16_t)tcpPort, (uint16_t)udpPort, g.callbacks.userdata);
-}
-
-// 手动连接（用于无法自动发现服务器的情况）
+// 连接服务器（使用输入框中的配置）
 static void OnClientManualConnect(void) {
     wchar_t ipW[64], tcpPortW[16], udpPortW[16];
     GetWindowTextW(g.hCliManualIp, ipW, 64);
@@ -546,7 +566,7 @@ static void OnClientManualConnect(void) {
     int udpPort = _wtoi(udpPortW);
     
     if (strlen(ipA) == 0) {
-        MessageBoxW(g.hMain, L"请输入服务器IP地址", L"手动连接", MB_OK|MB_ICONWARNING);
+        MessageBoxW(g.hMain, L"请输入服务器IP地址", L"连接", MB_OK|MB_ICONWARNING);
         return;
     }
     if (tcpPort <= 0 || tcpPort > 65535) tcpPort = 5000;
@@ -573,6 +593,22 @@ static void OnVolumeChanged(void) {
     if (g.callbacks.onVolumeChanged) g.callbacks.onVolumeChanged(in, out, g.callbacks.userdata);
 }
 
+// 当选择服务器列表项时，自动填充到手动连接输入框
+static void OnServerListSelectionChanged(void) {
+    int sel = ListView_GetNextItem(g.hCliServers, -1, LVNI_SELECTED);
+    if (sel < 0) return;
+    
+    wchar_t ip[64], tcpPort[16], udpPort[16];
+    ListView_GetItemText(g.hCliServers, sel, 1, ip, 64);
+    ListView_GetItemText(g.hCliServers, sel, 2, tcpPort, 16);
+    ListView_GetItemText(g.hCliServers, sel, 3, udpPort, 16);
+    
+    // 自动填充到手动连接的输入框
+    SetWindowTextW(g.hCliManualIp, ip);
+    SetWindowTextW(g.hCliManualTcpPort, tcpPort);
+    SetWindowTextW(g.hCliManualUdpPort, udpPort);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CTLCOLORSTATIC:
@@ -589,9 +625,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         NMHDR* p = (NMHDR*)lParam;
         if (p->hwndFrom == g.hTab && p->code == TCN_SELCHANGE)
             SwitchTab(TabCtrl_GetCurSel(g.hTab));
+        // 处理服务器列表选择变化
+        if (p->hwndFrom == g.hCliServers && (p->code == LVN_ITEMCHANGED || p->code == NM_CLICK)) {
+            OnServerListSelectionChanged();
+        }
         break;
     }
     case WM_COMMAND:
+        // 先处理托盘菜单命令
+        if (LOWORD(wParam) == IDM_SHOW) {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            return 0;
+        } else if (LOWORD(wParam) == IDM_MUTE) {
+            BOOL muted = (SendMessage(g.hMuteBtn, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            SendMessage(g.hMuteBtn, BM_SETCHECK, muted ? BST_UNCHECKED : BST_CHECKED, 0);
+            OnMuteChanged();
+            return 0;
+        } else if (LOWORD(wParam) == IDM_EXIT) {
+            Shell_NotifyIconW(NIM_DELETE, &g.nid);
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        // 处理其他控件命令
         switch (LOWORD(wParam)) {
         case IDC_BTN_START: 
             LOG_INFO("WM_COMMAND: IDC_BTN_START received");
@@ -604,10 +660,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case IDC_BTN_REFRESH: 
             LOG_INFO("WM_COMMAND: IDC_BTN_REFRESH received");
             OnClientRefresh(); 
-            break;
-        case IDC_BTN_CONNECT: 
-            LOG_INFO("WM_COMMAND: IDC_BTN_CONNECT received");
-            OnClientConnect(); 
             break;
         case IDC_BTN_MANUAL_CONN:
             LOG_INFO("WM_COMMAND: IDC_BTN_MANUAL_CONN received");
@@ -630,17 +682,50 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g.hStatus) SendMessage(g.hStatus, WM_SIZE, 0, 0);
         break;
     case WM_CLOSE:
-        if (g.serverRunning || g.clientConnected) {
-            if (MessageBoxW(hwnd, L"当前有活动连接，确定要退出吗？", L"确认退出", MB_YESNO|MB_ICONQUESTION) != IDYES)
-                return 0;
-        }
-        DestroyWindow(hwnd);
+        // 最小化到托盘而不是关闭
+        ShowWindow(hwnd, SW_HIDE);
         return 0;
+    case WM_TRAYICON: {
+        UINT trayMsg = LOWORD(lParam);
+        if (trayMsg == WM_LBUTTONDBLCLK) {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+        } else if (trayMsg == WM_RBUTTONUP || trayMsg == WM_CONTEXTMENU || trayMsg == WM_RBUTTONDOWN) {
+            HMENU hMenu = LoadMenuW(g.hInstance, MAKEINTRESOURCEW(IDM_TRAY));
+            if (hMenu) {
+                HMENU hPopup = GetSubMenu(hMenu, 0);
+                if (hPopup) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    SetForegroundWindow(hwnd);
+                    SetFocus(hwnd);
+                    CheckMenuItem(hPopup, IDM_MUTE,
+                        (SendMessage(g.hMuteBtn, BM_GETCHECK, 0, 0) == BST_CHECKED) ? MF_CHECKED : MF_UNCHECKED);
+                    UINT cmd = TrackPopupMenuEx(
+                        hPopup,
+                        TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                        pt.x,
+                        pt.y,
+                        hwnd,
+                        NULL);
+                    if (cmd) {
+                        PostMessageW(hwnd, WM_COMMAND, cmd, 0);
+                    }
+                    // Ensure menu closes correctly when clicking elsewhere
+                    PostMessageW(hwnd, WM_NULL, 0, 0);
+                }
+                DestroyMenu(hMenu);
+            }
+        }
+        return 0;
+    }
     case WM_DESTROY:
+        Shell_NotifyIconW(NIM_DELETE, &g.nid);
         KillTimer(hwnd, IDT_UPDATE);
         if (g.hTitleFont) DeleteObject(g.hTitleFont);
         if (g.hNormalFont) DeleteObject(g.hNormalFont);
         if (g.hBoldFont) DeleteObject(g.hBoldFont);
+        if (g.hMonoFont) DeleteObject(g.hMonoFont);
         if (g.hHeaderBrush) DeleteObject(g.hHeaderBrush);
         if (g.hAccentBrush) DeleteObject(g.hAccentBrush);
         PostQuitMessage(0);
@@ -692,9 +777,17 @@ void Gui_UpdatePeerList(const void* peers, int count) {
     
     const PeerInfo* list = (const PeerInfo*)peers;
     for (int i = 0; i < count; i++) {
-        wchar_t name[64], status[32], extra[32];
+        wchar_t name[64], status[32], extra[32], peerType[16];
         MultiByteToWideChar(CP_UTF8, 0, list[i].name, -1, name, 64);
         
+        // 用户类型
+        switch (list[i].peer_type) {
+            case PEER_TYPE_SERVER: wcscpy(peerType, L"服务器"); break;
+            case PEER_TYPE_SELF:   wcscpy(peerType, L"本机"); break;
+            default:               wcscpy(peerType, L"客户端"); break;
+        }
+        
+        // 状态
         if (list[i].is_muted) {
             wcscpy(status, L"已静音");
         } else if (list[i].is_talking) {
@@ -707,16 +800,20 @@ void Gui_UpdatePeerList(const void* peers, int count) {
         ListView_InsertItem(hList, &item);
         
         if (g.currentTab == 0) {
+            // 服务器模式：用户名、类型、IP、端口、状态
             wchar_t ip[64], port[16];
             MultiByteToWideChar(CP_UTF8, 0, list[i].ip, -1, ip, 64);
             wsprintfW(port, L"%d", list[i].udp_port);
-            ListView_SetItemText(hList, i, 1, ip);
-            ListView_SetItemText(hList, i, 2, port);
-            ListView_SetItemText(hList, i, 3, status);
+            ListView_SetItemText(hList, i, 1, peerType);
+            ListView_SetItemText(hList, i, 2, ip);
+            ListView_SetItemText(hList, i, 3, port);
+            ListView_SetItemText(hList, i, 4, status);
         } else {
+            // 客户端模式：用户名、类型、状态、SSRC
             wsprintfW(extra, L"%u", list[i].ssrc);
-            ListView_SetItemText(hList, i, 1, status);
-            ListView_SetItemText(hList, i, 2, extra);
+            ListView_SetItemText(hList, i, 1, peerType);
+            ListView_SetItemText(hList, i, 2, status);
+            ListView_SetItemText(hList, i, 3, extra);
         }
     }
 }
@@ -789,4 +886,18 @@ void Gui_ShowError(const char* msg) {
     wchar_t w[512];
     MultiByteToWideChar(CP_UTF8, 0, msg, -1, w, 512);
     MessageBoxW(g.hMain, w, L"错误", MB_OK|MB_ICONERROR);
+}
+
+void Gui_GetClientUsername(char* name, int max_len) {
+    if (!name || max_len <= 0) return;
+    
+    wchar_t wname[64];
+    GetWindowTextW(g.hCliUsername, wname, 64);
+    WideCharToMultiByte(CP_UTF8, 0, wname, -1, name, max_len, NULL, NULL);
+    
+    // 如果为空，使用默认名
+    if (name[0] == '\0') {
+        strncpy(name, "User", max_len - 1);
+        name[max_len - 1] = '\0';
+    }
 }

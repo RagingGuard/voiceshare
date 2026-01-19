@@ -80,4 +80,11 @@ void Gui_AddLog(const char* msg);
  */
 void Gui_ShowError(const char* msg);
 
+/**
+ * @brief 获取客户端用户名
+ * @param name 输出缓冲区
+ * @param max_len 缓冲区大小
+ */
+void Gui_GetClientUsername(char* name, int max_len);
+
 #endif // GUI_H

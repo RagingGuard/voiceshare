@@ -124,4 +124,10 @@ void Audio_EnableCaptureDsp(bool enable);
  */
 bool Audio_IsCaptureDspEnabled(void);
 
+/**
+ * @brief 获取当前是否检测到人声 (VAD)
+ * @return true 有人声, false 无人声
+ */
+bool Audio_IsCaptureVoiceDetected(void);
+
 #endif // AUDIO_H

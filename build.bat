@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal
 
 echo ========================================
-echo   SharedVoice 构建脚本
+echo   局域网语音平台 构建脚本
 echo ========================================
 echo.
 
@@ -40,9 +40,9 @@ echo      编译成功
 
 echo.
 echo [3/4] 复制到桌面...
-if exist "bin\x64\Release\SharedVoice.exe" (
-    copy /y "bin\x64\Release\SharedVoice.exe" "%DESKTOP%\SharedVoice.exe" >nul
-    echo      已复制到: %DESKTOP%\SharedVoice.exe
+if exist "bin\x64\Release\局域网语音平台.exe" (
+    copy /y "bin\x64\Release\局域网语音平台.exe" "%DESKTOP%\局域网语音平台.exe" >nul
+    echo      已复制到: %DESKTOP%\局域网语音平台.exe
 ) else (
     echo [错误] 未找到生成的 exe 文件
     pause
@@ -58,7 +58,7 @@ echo      完成
 echo.
 echo ========================================
 echo   构建完成！
-echo   可执行文件: %DESKTOP%\SharedVoice.exe
+echo   可执行文件: %DESKTOP%\局域网语音平台.exe
 echo ========================================
 echo.
 

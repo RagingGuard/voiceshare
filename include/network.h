@@ -72,6 +72,15 @@ SOCKET Network_CreateTcpListener(uint16_t port);
 SOCKET Network_TcpConnect(const char* ip, uint16_t port);
 
 /**
+ * @brief 快速测试TCP连接是否可达 (带超时)
+ * @param ip 服务器IP
+ * @param port 服务器端口  
+ * @param timeout_ms 超时时间(毫秒)
+ * @return true=可连接, false=不可达或超时
+ */
+bool Network_TcpQuickTest(const char* ip, uint16_t port, int timeout_ms);
+
+/**
  * @brief 发送UDP广播
  */
 int Network_UdpBroadcast(SOCKET sock, const void* data, int len, uint16_t port);

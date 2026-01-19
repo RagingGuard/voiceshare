@@ -10,6 +10,7 @@
  */
 
 #include "jitter_buffer.h"
+#include <stdio.h>
 
 //=============================================================================
 // 内部结构
@@ -308,17 +309,13 @@ int JitterBuffer_Get(JitterBuffer* jb, int16_t* samples, int max_samples) {
     
     uint64_t now = GetTickCount64Ms();
     
-    // 计算目标延迟内应该播放的包
     // 检查 head 位置的包是否应该播放
     JitterSlot* slot = &jb->slots[jb->head];
     
-    // 自适应: 检查缓冲级别
-    int level_ms = JitterBuffer_GetLevel(jb);
-    
-    // 缓冲区还没达到目标延迟, 继续等待
-    if (level_ms < (int)jb->config.target_delay_ms && jb->count < 3) {
+    // 快速启动：只需要 1 个包就开始播放（20ms 延迟）
+    if (jb->count < 1) {
         MutexUnlock(&jb->mutex);
-        return 0;  // 等待更多数据
+        return 0;  // 等待数据
     }
     
     // 检查当前槽

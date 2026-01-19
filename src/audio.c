@@ -26,6 +26,7 @@ typedef struct {
     bool        captureMute;
     float       captureVolume;
     float       captureLevel;
+    bool        captureVoiceDetected;  // VAD 状态：是否检测到人声
     
     // 播放
     HWAVEOUT    hWaveOut;
@@ -42,10 +43,6 @@ typedef struct {
     int         playbackQueueHead;
     int         playbackQueueTail;
     int         playbackQueueSize;
-    
-    // DSP 处理器 (用于采集端噪声门限)
-    AudioDsp*   captureDsp;
-    bool        captureDspEnabled;
     
     bool        initialized;
 } AudioState;
@@ -64,34 +61,33 @@ static void CALLBACK WaveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
         if (g_audio.capturing && hdr->dwBytesRecorded > 0) {
             int16_t* samples = (int16_t*)hdr->lpData;
             int count = hdr->dwBytesRecorded / sizeof(int16_t);
+            int process_count = MIN(count, AUDIO_FRAME_SAMPLES);
             
-            // DSP 处理 (噪声门限)
-            float dsp_gain = 1.0f;
-            if (g_audio.captureDspEnabled && g_audio.captureDsp) {
-                AudioAnalysis analysis;
-                dsp_gain = AudioDsp_Process(g_audio.captureDsp, samples, count, &analysis);
-                g_audio.captureLevel = AudioDsp_DbToLinear(analysis.rms_db);
-            } else {
-                // 计算电平 (原有方式)
-                float level = 0;
-                for (int i = 0; i < count; i++) {
-                    float s = (float)abs(samples[i]) / 32768.0f;
-                    if (s > level) level = s;
-                }
-                g_audio.captureLevel = level;
+            // 计算 RMS 电平（用于 UI 显示和 VAD）
+            float rms = 0;
+            for (int i = 0; i < process_count; i++) {
+                float s = samples[i] / 32768.0f;
+                rms += s * s;
             }
+            rms = sqrtf(rms / process_count);
+            g_audio.captureLevel = CLAMP(rms * 3.0f, 0.0f, 1.0f);
             
-            // 应用音量
-            if (!g_audio.captureMute && g_audio.captureVolume != 1.0f) {
-                for (int i = 0; i < count; i++) {
+            // 简单 VAD：基于 RMS 电平
+            bool is_voice = (rms > 0.003f);  // 约 -50dB 阈值
+            g_audio.captureVoiceDetected = is_voice;
+            
+            // 复制数据并应用音量
+            int16_t output[AUDIO_FRAME_SAMPLES];
+            if (!g_audio.captureMute) {
+                for (int i = 0; i < process_count; i++) {
                     float s = samples[i] * g_audio.captureVolume;
-                    samples[i] = (int16_t)CLAMP(s, -32768, 32767);
+                    output[i] = (int16_t)CLAMP(s, -32768, 32767);
                 }
-            }
-            
-            // 回调
-            if (g_audio.captureCallback && !g_audio.captureMute) {
-                g_audio.captureCallback(samples, count, g_audio.captureUserdata);
+                
+                // 回调发送音频
+                if (g_audio.captureCallback) {
+                    g_audio.captureCallback(output, process_count, g_audio.captureUserdata);
+                }
             }
         }
         
@@ -119,15 +115,9 @@ bool Audio_Init(void) {
     g_audio.captureVolume = 1.0f;
     g_audio.playbackVolume = 1.0f;
     
-    // 创建采集端 DSP 处理器
-    AudioDspConfig dsp_config;
-    AudioDsp_GetDefaultConfig(&dsp_config);
-    g_audio.captureDsp = AudioDsp_Create(&dsp_config);
-    g_audio.captureDspEnabled = true;  // 默认启用
-    
     g_audio.initialized = true;
     
-    LOG_INFO("Audio engine initialized (DSP enabled)");
+    LOG_INFO("Audio engine initialized");
     return true;
 }
 
@@ -136,12 +126,6 @@ void Audio_Shutdown(void) {
     
     Audio_StopCapture();
     Audio_StopPlayback();
-    
-    // 销毁 DSP 处理器
-    if (g_audio.captureDsp) {
-        AudioDsp_Destroy(g_audio.captureDsp);
-        g_audio.captureDsp = NULL;
-    }
     
     MutexDestroy(&g_audio.playbackMutex);
     g_audio.initialized = false;
@@ -288,18 +272,19 @@ bool Audio_SubmitPlaybackData(const int16_t* samples, int count) {
     memcpy(hdr->lpData, samples, bytes);
     hdr->dwBufferLength = bytes;
     
-    // 应用音量
+    // 应用音量并计算 RMS 电平
     int16_t* buf = (int16_t*)hdr->lpData;
     int bufCount = bytes / sizeof(int16_t);
     
-    float level = 0;
+    float rms = 0;
     for (int i = 0; i < bufCount; i++) {
         float s = buf[i] * g_audio.playbackVolume;
         buf[i] = (int16_t)CLAMP(s, -32768, 32767);
-        float abs_s = (float)abs(buf[i]) / 32768.0f;
-        if (abs_s > level) level = abs_s;
+        float normalized = buf[i] / 32768.0f;
+        rms += normalized * normalized;
     }
-    g_audio.playbackLevel = level;
+    rms = sqrtf(rms / bufCount);
+    g_audio.playbackLevel = CLAMP(rms * 3.0f, 0.0f, 1.0f);  // 放大3倍便于UI显示
     
     // 提交播放
     waveOutWrite(g_audio.hWaveOut, hdr, sizeof(WAVEHDR));
@@ -378,13 +363,14 @@ void Audio_Mix(int16_t* output, const int16_t** inputs, int input_count, int sam
 }
 
 void Audio_EnableCaptureDsp(bool enable) {
-    g_audio.captureDspEnabled = enable;
-    if (g_audio.captureDsp) {
-        AudioDsp_Reset(g_audio.captureDsp);
-    }
-    LOG_INFO("Audio capture DSP %s", enable ? "enabled" : "disabled");
+    // DSP 已禁用，此函数保留用于兼容性
+    (void)enable;
 }
 
 bool Audio_IsCaptureDspEnabled(void) {
-    return g_audio.captureDspEnabled;
+    return false;  // DSP 已禁用
+}
+
+bool Audio_IsCaptureVoiceDetected(void) {
+    return g_audio.captureVoiceDetected;
 }

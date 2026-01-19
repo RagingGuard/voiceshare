@@ -200,6 +200,15 @@ typedef struct {
 } TimeSyncPacket;
 
 /**
+ * @brief 用户类型
+ */
+typedef enum {
+    PEER_TYPE_CLIENT = 0,   // 普通客户端
+    PEER_TYPE_SERVER = 1,   // 服务器
+    PEER_TYPE_SELF   = 2    // 本机
+} PeerType;
+
+/**
  * @brief 用户信息
  */
 typedef struct {
@@ -211,7 +220,7 @@ typedef struct {
     uint8_t  is_talking;        // 是否在说话
     uint8_t  is_muted;          // 是否静音
     uint8_t  audio_active;      // 音频是否激活
-    uint8_t  reserved;
+    uint8_t  peer_type;         // 用户类型 (PeerType)
 } PeerInfo;
 
 /**

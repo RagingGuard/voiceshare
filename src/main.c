@@ -19,6 +19,7 @@ static uint32_t g_rtpTimestamp = 0;
 
 static void OnAudioCapture(const int16_t* samples, int count, void* userdata) {
     if (!g_opusEncoder) return;
+    
     uint8_t opus_data[OPUS_MAX_PACKET];
     int opus_len = OpusCodec_Encode(g_opusEncoder, samples, count, opus_data, sizeof(opus_data));
     if (opus_len > 0) {
@@ -34,6 +35,11 @@ static void OnAudioCapture(const int16_t* samples, int count, void* userdata) {
 static void OnServerStarted(void* userdata) {
     Gui_SetServerRunning(true);
     Gui_AddLog("Server started");
+    
+    // 立即更新用户列表，显示服务器自己
+    PeerInfo peers[MAX_CLIENTS];
+    int count = Server_GetClients(peers, MAX_CLIENTS);
+    Gui_UpdatePeerList(peers, count);
 }
 
 static void OnServerStopped(void* userdata) {
@@ -72,6 +78,11 @@ static void OnConnected(void* userdata) {
         Gui_SetConnected(true, NULL);
     }
     Gui_AddLog("Connected to server (TCP control)");
+    
+    // 立即更新用户列表，显示服务器和自己
+    PeerInfo peers[MAX_CLIENTS];
+    int count = Client_GetPeers(peers, MAX_CLIENTS);
+    Gui_UpdatePeerList(peers, count);
 }
 
 static void OnDisconnected(void* userdata) {
@@ -102,7 +113,10 @@ static void OnPeerLeft(uint32_t client_id, void* userdata) {
     Gui_UpdatePeerList(peers, count);
 }
 
-static void OnPeerListReceived(const PeerInfo* peers, int count, void* userdata) {
+static void OnPeerListReceived(const PeerInfo* peers_raw, int count_raw, void* userdata) {
+    // 不直接使用服务器发来的原始列表，而是调用 Client_GetPeers() 获取完整列表（包含服务器和自己）
+    PeerInfo peers[MAX_CLIENTS];
+    int count = Client_GetPeers(peers, MAX_CLIENTS);
     Gui_UpdatePeerList(peers, count);
 }
 
@@ -172,6 +186,12 @@ static void OnGuiConnect(const char* ip, uint16_t tcp_port, uint16_t udp_port, v
     
     g_isServerMode = false;
     Server_Stop();
+    
+    // 获取并设置用户名
+    char username[MAX_NAME_LEN];
+    Gui_GetClientUsername(username, MAX_NAME_LEN);
+    Client_SetName(username);
+    LOG_INFO("Client username set to: %s", username);
     
     if (!g_opusEncoder) {
         OpusEncoderConfig enc_config;
